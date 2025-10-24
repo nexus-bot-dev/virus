@@ -1,11 +1,14 @@
-import { Router } from 'itty-router';
+ import { Router } from 'itty-router';
 
 const router = Router();
 
 // In-memory storage untuk sessions (sementara)
 const userSessions = new Map();
 
-// Helper functions untuk KV storage
+// --- HELPER FUNCTIONS (Fungsi Bantuan) ---
+// (loadDB, saveDB, loadPendingPayments, savePendingPayment, removePendingPayment, getPendingPayment, formatNumber, getRandomAmount, sendTelegramMessage, sendTelegramPhoto, editMessageText, editMessageCaption, answerCallbackQuery)
+// ... (TETAP SAMA, tidak perlu diubah)
+
 async function loadDB(binding, dbType) {
     try {
         const data = await binding.get(dbType, 'json');
@@ -25,7 +28,6 @@ async function saveDB(binding, data, dbType) {
     }
 }
 
-// Helper functions untuk pending payments
 async function loadPendingPayments(binding) {
     try {
         const data = await binding.get('pending_payments', 'json');
@@ -40,7 +42,7 @@ async function savePendingPayment(binding, userId, paymentData) {
         const pendingPayments = await loadPendingPayments(binding);
         pendingPayments[userId] = {
             ...paymentData,
-            timestamp: paymentData.timestamp.toISOString() // Convert Date to string
+            timestamp: paymentData.timestamp.toISOString()
         };
         await binding.put('pending_payments', JSON.stringify(pendingPayments));
         return true;
@@ -69,7 +71,6 @@ async function getPendingPayment(binding, userId) {
         const pendingPayments = await loadPendingPayments(binding);
         const payment = pendingPayments[userId];
         if (payment) {
-            // Convert string back to Date object
             return {
                 ...payment,
                 timestamp: new Date(payment.timestamp)
@@ -82,32 +83,26 @@ async function getPendingPayment(binding, userId) {
     }
 }
 
-// Format number dengan titik
 function formatNumber(num) {
     return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 }
 
-// Generate random number dengan konfigurasi dari environment
 function getRandomAmount(env) {
     const min = parseInt(env.RANDOM_AMOUNT_MIN) || 1;
     const max = parseInt(env.RANDOM_AMOUNT_MAX) || 50;
     return Math.floor(Math.random() * (max - min + 1)) + min;
 }
 
-// Kirim request ke Telegram API
 async function sendTelegramMessage(botToken, chatId, text, replyMarkup = null, parseMode = 'HTML') {
     const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-    
     const payload = {
         chat_id: chatId,
         text: text,
         parse_mode: parseMode
     };
-    
     if (replyMarkup) {
         payload.reply_markup = replyMarkup;
     }
-    
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -116,7 +111,6 @@ async function sendTelegramMessage(botToken, chatId, text, replyMarkup = null, p
             },
             body: JSON.stringify(payload)
         });
-        
         return await response.json();
     } catch (error) {
         console.error('Error sending Telegram message:', error);
@@ -124,21 +118,17 @@ async function sendTelegramMessage(botToken, chatId, text, replyMarkup = null, p
     }
 }
 
-// Kirim photo ke Telegram
 async function sendTelegramPhoto(botToken, chatId, photoUrl, caption = '', replyMarkup = null, parseMode = 'HTML') {
     const url = `https://api.telegram.org/bot${botToken}/sendPhoto`;
-    
     const payload = {
         chat_id: chatId,
         photo: photoUrl,
         caption: caption,
         parse_mode: parseMode
     };
-    
     if (replyMarkup) {
         payload.reply_markup = replyMarkup;
     }
-    
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -147,7 +137,6 @@ async function sendTelegramPhoto(botToken, chatId, photoUrl, caption = '', reply
             },
             body: JSON.stringify(payload)
         });
-        
         return await response.json();
     } catch (error) {
         console.error('Error sending Telegram photo:', error);
@@ -155,21 +144,17 @@ async function sendTelegramPhoto(botToken, chatId, photoUrl, caption = '', reply
     }
 }
 
-// Edit message text
 async function editMessageText(botToken, chatId, messageId, text, replyMarkup = null, parseMode = 'HTML') {
     const url = `https://api.telegram.org/bot${botToken}/editMessageText`;
-    
     const payload = {
         chat_id: chatId,
         message_id: messageId,
         text: text,
         parse_mode: parseMode
     };
-    
     if (replyMarkup) {
         payload.reply_markup = replyMarkup;
     }
-    
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -178,7 +163,6 @@ async function editMessageText(botToken, chatId, messageId, text, replyMarkup = 
             },
             body: JSON.stringify(payload)
         });
-        
         return await response.json();
     } catch (error) {
         console.error('Error editing message text:', error);
@@ -186,21 +170,17 @@ async function editMessageText(botToken, chatId, messageId, text, replyMarkup = 
     }
 }
 
-// Edit message caption
 async function editMessageCaption(botToken, chatId, messageId, caption, replyMarkup = null, parseMode = 'HTML') {
     const url = `https://api.telegram.org/bot${botToken}/editMessageCaption`;
-    
     const payload = {
         chat_id: chatId,
         message_id: messageId,
         caption: caption,
         parse_mode: parseMode
     };
-    
     if (replyMarkup) {
         payload.reply_markup = replyMarkup;
     }
-    
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -209,7 +189,6 @@ async function editMessageCaption(botToken, chatId, messageId, caption, replyMar
             },
             body: JSON.stringify(payload)
         });
-        
         return await response.json();
     } catch (error) {
         console.error('Error editing message caption:', error);
@@ -217,19 +196,15 @@ async function editMessageCaption(botToken, chatId, messageId, caption, replyMar
     }
 }
 
-// Answer callback query
 async function answerCallbackQuery(botToken, callbackQueryId, text = null, showAlert = false) {
     const url = `https://api.telegram.org/bot${botToken}/answerCallbackQuery`;
-    
     const payload = {
         callback_query_id: callbackQueryId
     };
-    
     if (text) {
         payload.text = text;
         payload.show_alert = showAlert;
     }
-    
     try {
         const response = await fetch(url, {
             method: 'POST',
@@ -238,7 +213,6 @@ async function answerCallbackQuery(botToken, callbackQueryId, text = null, showA
             },
             body: JSON.stringify(payload)
         });
-        
         return await response.json();
     } catch (error) {
         console.error('Error answering callback query:', error);
@@ -246,11 +220,52 @@ async function answerCallbackQuery(botToken, callbackQueryId, text = null, showA
     }
 }
 
-// Handle command /start
+// ** (BARU) Notifikasi Log Grup **
+async function sendLogNotification(env, type, userData, itemData) {
+    const chatId = env.LOG_GROUP_ID; 
+    if (!chatId) return;
+
+    let message = `
+🔔 <b>Log Transaksi Baru: ${type}</b>
+
+👤 <b>User:</b> <code>@${userData.username || 'N/A'}</code>
+🆔 <b>User ID:</b> <code>${userData.id}</code>
+    `;
+
+    if (type === 'PEMBELIAN') {
+        const formattedPrice = formatNumber(itemData.price);
+        const formattedSaldo = formatNumber(itemData.currentSaldo);
+        message += `
+🛒 <b>Status:</b> ✅ Berhasil
+📦 <b>Produk:</b> ${itemData.name}
+💸 <b>Harga:</b> <code>Rp ${formattedPrice}</code>
+📧 <b>Akun:</b> <code>${itemData.email}</code> | <code>${itemData.password}</code>
+💳 <b>Sisa Saldo:</b> <code>Rp ${formattedSaldo}</code>
+        `;
+    } else if (type === 'DEPOSIT') {
+        const formattedNominal = formatNumber(itemData.nominal);
+        const formattedFinal = formatNumber(itemData.finalNominal);
+        const formattedSaldo = formatNumber(itemData.currentSaldo);
+        message += `
+💳 <b>Status:</b> ✅ Berhasil
+🆔 <b>ID Transaksi:</b> <code>${itemData.transactionId}</code>
+💰 <b>Nominal:</b> <code>Rp ${formattedNominal}</code>
+➕ <b>Total Bayar:</b> <code>Rp ${formattedFinal}</code>
+💳 <b>Saldo Baru:</b> <code>Rp ${formattedSaldo}</code>
+        `;
+    }
+
+    await sendTelegramMessage(env.BOT_TOKEN, chatId, message);
+}
+
+
+// --- 🌟 HANDLER TAMPILAN KEREN 🌟 ---
+
+// ** (KEREN) Handle command /start **
 async function handleStart(update, env) {
     const user = update.message.from;
     const userId = user.id.toString();
-    const username = user.username || "Tidak Ada";
+    const userFirstName = user.first_name || user.username || "User";
     
     const users = await loadDB(env.BOT_DB, 'users');
     const accounts = await loadDB(env.BOT_DB, 'accounts');
@@ -260,38 +275,46 @@ async function handleStart(update, env) {
         await saveDB(env.BOT_DB, users, 'users');
     }
     
-    const saldo = users[userId].saldo;
+    const saldo = users[userId]?.saldo || 0;
     const formattedSaldo = formatNumber(saldo);
     const stok = Object.keys(accounts).length;
     
-    // Ambil username admin dari environment
     const adminUsername = env.ADMIN_USERNAME || "@admin";
-    
+    const botName = env.BOT_NAME || "Bot Order Otomatis";
+
     const message = `
-👋 <b>Selamat Datang Di Bot Order Otomatis</b>
+Halo, <b>${userFirstName}</b>! 👋
 
-🆔 <b>User ID:</b> <code>${userId}</code>
-👤 <b>Username:</b> <code>@${username}</code>
+Selamat datang di <b>${botName}</b>.
+Sistem order otomatis 24/7 untuk kebutuhan Anda.
 
-💰 <b>Saldo Anda:</b> <code>Rp ${formattedSaldo}</code>
-📦 <b>Stok Akun Tersedia:</b> <code>${stok}</code>
+┌ <b>INFORMASI AKUN ANDA</b>
+├ 🆔 <b>User ID:</b> <code>${userId}</code>
+└ 💰 <b>Saldo:</b> <code>Rp ${formattedSaldo}</code>
 
-👨‍💼 <b>Admin:</b> ${adminUsername}
+┌ <b>INFORMASI BOT</b>
+├ 📦 <b>Stok Akun:</b> ${stok}
+└ 👨‍💼 <b>Bantuan:</b> ${adminUsername}
 
-⚙️ <b>Gunakan menu di bawah ini untuk melanjutkan pembelian atau deposit.</b>
+👇 Silakan pilih menu di bawah ini untuk memulai:
     `;
     
     const keyboard = {
         inline_keyboard: [
-            [{ text: "🛒 Beli Akun", callback_data: "beli_akun" }],
-            [{ text: "💳 Deposit Saldo", callback_data: "deposit" }]
+            [
+                { text: "🛒 Beli Akun", callback_data: "beli_akun" },
+                { text: "💳 Deposit Saldo", callback_data: "deposit" }
+            ],
+            [
+                { text: "🔄 Refresh", callback_data: "back_to_main" }
+            ]
         ]
     };
     
     return await sendTelegramMessage(env.BOT_TOKEN, user.id, message, keyboard);
 }
 
-// Handle command /id
+// Handle command /id (Tetap sama, sudah cukup keren)
 async function handleGetId(update, env) {
     const user = update.message.from;
     const userId = user.id;
@@ -319,19 +342,27 @@ Terima kasih telah menggunakan bot ini! 😊
     return await sendTelegramMessage(env.BOT_TOKEN, userId, message);
 }
 
-// Handle callback beli akun
+// ** (KEREN) Handle callback beli akun **
 async function handleBeliAkunCallback(update, env) {
     const callbackQuery = update.callback_query;
     const user = callbackQuery.from;
+    const userId = user.id.toString();
     
     const accounts = await loadDB(env.BOT_DB, 'accounts');
+    const users = await loadDB(env.BOT_DB, 'users');
+    const saldo = users[userId]?.saldo || 0;
     
     if (Object.keys(accounts).length === 0) {
         const message = `
-⚠️ <b>Maaf, saat ini item tidak tersedia.</b>  
-Silakan cek kembali nanti! 🙏
+⚠️ <b>STOK KOSONG</b> ⚠️
+
+Maaf, <b>${user.first_name}</b>, saat ini semua produk sedang habis.
+Silakan cek kembali nanti atau hubungi admin.
         `;
-        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
+        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "Stok produk kosong!", true);
+        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, {
+            inline_keyboard: [[{ text: "🔙 Kembali ke Menu", callback_data: "back_to_main" }]]
+        });
     }
     
     const groupedAccounts = {};
@@ -343,41 +374,48 @@ Silakan cek kembali nanti! 🙏
         groupedAccounts[key].push(email);
     }
     
+    const keyboardButtons = Object.entries(groupedAccounts).map(([key, emails]) => {
+        const [name, price] = key.split('_');
+        const count = emails.length;
+        const formattedPrice = formatNumber(parseInt(price));
+        // Tombol yang lebih rapi
+        return [{
+            text: `📦 ${name} | Rp ${formattedPrice} (Stok: ${count})`,
+            callback_data: `group_${name}_${price}`
+        }];
+    });
+
     const keyboard = {
         inline_keyboard: [
-            ...Object.entries(groupedAccounts).map(([key, emails]) => {
-                const [name, price] = key.split('_');
-                const count = emails.length;
-                const formattedPrice = formatNumber(parseInt(price));
-                return [{
-                    text: `${name} - Rp ${formattedPrice} (x${count})`,
-                    callback_data: `group_${name}_${price}`
-                }];
-            }),
-            [{ text: "🔙 Kembali", callback_data: "back_to_main" }] // Tombol kembali
+            ...keyboardButtons,
+            [{ text: "🔙 Kembali ke Menu", callback_data: "back_to_main" }]
         ]
     };
     
     const message = `
-🛒 <b>Silakan pilih produk yang tersedia di bawah ini:</b>
+🛒 <b>DAFTAR PRODUK</b> 🛒
 
-📋 <b>Total akun tersedia:</b> <code>${Object.keys(accounts).length}</code>
+Saldo Anda: <code>Rp ${formatNumber(saldo)}</code>
+Total Stok Tersedia: <code>${Object.keys(accounts).length}</code>
 
-Klik tombol di bawah untuk melihat detail atau memesan akun.
+Silakan pilih produk yang tersedia di bawah ini:
     `;
     
     await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
     return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, keyboard);
 }
 
-// Handle detail akun
+// ** (KEREN) Handle detail akun **
 async function handleDetailAkun(update, env) {
     const callbackQuery = update.callback_query;
     const user = callbackQuery.from;
+    const userId = user.id.toString();
     const callbackData = callbackQuery.data;
     
     const accounts = await loadDB(env.BOT_DB, 'accounts');
-    
+    const users = await loadDB(env.BOT_DB, 'users');
+    const saldo = users[userId]?.saldo || 0;
+
     const [, name, price] = callbackData.split('_');
     const priceInt = parseInt(price);
     
@@ -386,34 +424,40 @@ async function handleDetailAkun(update, env) {
     );
     
     if (filteredAccounts.length === 0) {
+        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "Stok item ini baru saja habis!", true);
         const message = `
-❌ <b>Akun yang dipilih tidak tersedia.</b>  
-Silakan pilih akun lain dari daftar yang tersedia.
+❌ <b>STOK HABIS</b>
+Akun yang Anda pilih baru saja habis. Silakan pilih akun lain.
         `;
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
+        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, {
+             inline_keyboard: [[{ text: "🛒 Kembali ke Daftar Produk", callback_data: "beli_akun" }]]
+        });
     }
     
-    const randomIndex = Math.floor(Math.random() * filteredAccounts.length);
-    const [email, akun] = filteredAccounts[randomIndex];
+    const [email, akun] = filteredAccounts[0]; // Ambil 1 sampel
     const formattedPrice = formatNumber(akun.price);
     
     const message = `
-<b>Detail Produk</b>
+📄 <b>DETAIL & KONFIRMASI</b> 📄
 
-<b>Nama:</b> <code>${akun.name}</code>
-<b>Harga:</b> <code>Rp ${formattedPrice}</code>
-<b>Deskripsi Produk:</b>  
+┌ <b>PRODUK</b>
+├ 📦 <b>Nama:</b> <code>${akun.name}</code>
+├ 💸 <b>Harga:</b> <code>Rp ${formattedPrice}</code>
+└ 📝 <b>Deskripsi:</b>
 ${akun.description}
 
-❓ <b>Apakah Anda ingin membeli produk ini?</b>
+---
+Saldo Anda: <code>Rp ${formatNumber(saldo)}</code>
+Stok Item Ini: ${filteredAccounts.length}
+
+Tekan "✅ Beli Sekarang" untuk melanjutkan.
     `;
     
     const keyboard = {
         inline_keyboard: [
             [
-                { text: "✅ Iya", callback_data: `beli_${email}` },
-                { text: "❌ Tidak", callback_data: "beli_akun" }
+                { text: "✅ Beli Sekarang", callback_data: `beli_${email}` },
+                { text: "❌ Batal (Kembali)", callback_data: "beli_akun" }
             ]
         ]
     };
@@ -422,49 +466,58 @@ ${akun.description}
     return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, keyboard);
 }
 
-// Handle kembali ke menu utama
+// ** (KEREN) Handle kembali ke menu utama **
 async function handleBackToMain(update, env) {
     const callbackQuery = update.callback_query;
     const user = callbackQuery.from;
     const userId = user.id.toString();
-    const username = user.username || "Tidak Ada";
+    
+    const userFirstName = user.first_name || user.username || "User";
     
     const users = await loadDB(env.BOT_DB, 'users');
     const accounts = await loadDB(env.BOT_DB, 'accounts');
     
-    const saldo = users[userId].saldo;
+    const saldo = users[userId]?.saldo || 0;
     const formattedSaldo = formatNumber(saldo);
     const stok = Object.keys(accounts).length;
     
-    // Ambil username admin dari environment
     const adminUsername = env.ADMIN_USERNAME || "@admin";
-    
+    const botName = env.BOT_NAME || "Bot Order Otomatis";
+
     const message = `
-👋 <b>Selamat Datang Di Bot Order Otomatis</b>
+Halo, <b>${userFirstName}</b>! 👋
 
-🆔 <b>User ID:</b> <code>${userId}</code>
-👤 <b>Username:</b> <code>@${username}</code>
+Selamat datang di <b>${botName}</b>.
+Sistem order otomatis 24/7 untuk kebutuhan Anda.
 
-💰 <b>Saldo Anda:</b> <code>Rp ${formattedSaldo}</code>
-📦 <b>Stok Akun Tersedia:</b> <code>${stok}</code>
+┌ <b>INFORMASI AKUN ANDA</b>
+├ 🆔 <b>User ID:</b> <code>${userId}</code>
+└ 💰 <b>Saldo:</b> <code>Rp ${formattedSaldo}</code>
 
-👨‍💼 <b>Admin:</b> ${adminUsername}
+┌ <b>INFORMASI BOT</b>
+├ 📦 <b>Stok Akun:</b> ${stok}
+└ 👨‍💼 <b>Bantuan:</b> ${adminUsername}
 
-⚙️ <b>Gunakan menu di bawah ini untuk melanjutkan pembelian atau deposit.</b>
+👇 Silakan pilih menu di bawah ini untuk memulai:
     `;
     
     const keyboard = {
         inline_keyboard: [
-            [{ text: "🛒 Beli Akun", callback_data: "beli_akun" }],
-            [{ text: "💳 Deposit Saldo", callback_data: "deposit" }]
+            [
+                { text: "🛒 Beli Akun", callback_data: "beli_akun" },
+                { text: "💳 Deposit Saldo", callback_data: "deposit" }
+            ],
+            [
+                { text: "🔄 Refresh", callback_data: "back_to_main" }
+            ]
         ]
     };
     
-    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
+    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "Menu diperbarui!");
     return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, keyboard);
 }
 
-// Handle proses pembelian
+// ** (KEREN) Handle proses pembelian **
 async function handleProsesPembelian(update, env) {
     const callbackQuery = update.callback_query;
     const user = callbackQuery.from;
@@ -477,27 +530,36 @@ async function handleProsesPembelian(update, env) {
     const email = callbackData.split('_')[1];
     
     if (!accounts[email]) {
-        const message = "<b>⚠️ Akun yang dipilih tidak tersedia.</b>";
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
+        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "Akun sudah terjual!", true);
+        const message = "<b>⚠️ Maaf, akun yang Anda pilih sudah terjual.</b>";
+        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, {
+             inline_keyboard: [[{ text: "🛒 Kembali ke Daftar Produk", callback_data: "beli_akun" }]]
+        });
     }
     
     const akun = accounts[email];
     const harga = akun.price;
     
     if (!users[userId]) {
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "⚠️ Anda belum terdaftar!", true);
+        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "⚠️ Anda belum terdaftar! Ketik /start", true);
         return;
     }
     
     const saldo = users[userId].saldo;
     if (saldo < harga) {
         const message = `
-<b>💰 Saldo Anda tidak cukup untuk pembelian ini.</b>
-Silakan top-up terlebih dahulu.
+<b>🚫 SALDO TIDAK CUKUP</b>
+
+Maaf, <b>${user.first_name}</b>, saldo Anda tidak cukup.
+Harga Produk: <code>Rp ${formatNumber(harga)}</code>
+Saldo Anda: <code>Rp ${formatNumber(saldo)}</code>
+
+Silakan deposit terlebih dahulu.
         `;
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
+        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "Saldo tidak cukup!", true);
+        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, {
+             inline_keyboard: [[{ text: "💳 Deposit Saldo", callback_data: "deposit" }]]
+        });
     }
     
     // Proses pembelian
@@ -512,82 +574,123 @@ Silakan top-up terlebih dahulu.
     const formattedSaldo = formatNumber(currentSaldo);
     
     const akunStr = `
-<b>Pembelian Berhasil!</b>
+🎉 <b>TRANSAKSI BERHASIL</b> 🎉
 
-<b>Nama Produk:</b> <code>${akun.name}</code>
-<b>Email/Username:</b> <code>${akun.email}</code>
-<b>Password:</b> <code>${akun.password}</code>
-<b>Total yang Dibayar:</b> <code>Rp ${formattedPrice}</code>
-<b>Catatan Produk:</b>
-${akun.note || 'Tidak ada catatan'}
+Terima kasih telah membeli, <b>${user.first_name}</b>!
+Berikut adalah detail akun Anda:
 
-<b>Saldo Anda Saat Ini:</b> <code>Rp ${formattedSaldo}</code>
+┌ <b>DETAIL AKUN</b>
+├ 📦 <b>Produk:</b> <code>${akun.name}</code>
+├ 📧 <b>Email/User:</b> <code>${akun.email}</code>
+├ 🔑 <b>Password:</b> <code>${akun.password}</code>
+└ 🗒️ <b>Catatan:</b> ${akun.note || 'Tidak ada catatan'}
+
+┌ <b>RINGKASAN PEMBAYARAN</b>
+├ 💸 <b>Harga:</b> <code>Rp ${formattedPrice}</code>
+└ 💰 <b>Sisa Saldo:</b> <code>Rp ${formattedSaldo}</code>
+
+Simpan baik-baik detail akun Anda.
     `;
     
-    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-    await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, akunStr);
+    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "Pembelian Berhasil!");
     
-    // Kirim notifikasi ke admin
+    // Tombol baru setelah sukses
+    const keyboard = {
+        inline_keyboard: [
+            [
+                { text: "🛒 Beli Lagi", callback_data: "beli_akun" },
+                { text: "🏠 Menu Utama", callback_data: "back_to_main" }
+            ]
+        ]
+    };
+
+    await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, akunStr, keyboard);
+    
+    // Notifikasi ke Admin (Ringkas)
     const username = user.username || "null";
     const adminMessage = `
-<b>Notifikasi Pembelian</b>
-
-<b>Username:</b> <code>@${username}</code>
-<b>User ID:</b> <code>${userId}</code>
-<b>Nama Produk:</b> <code>${akun.name}</code>
-<b>Email/Username:</b> <code>${akun.email}</code>
-<b>Password:</b> <code>${akun.password}</code>
-<b>Harga:</b> <code>Rp ${formattedPrice}</code>
-<b>Catatan Produk:</b>
-${akun.note || 'Tidak ada catatan'}
-
-<b>Saldo Setelah Pembelian:</b> <code>Rp ${formattedSaldo}</code>
+🛒 <b>Penjualan Baru!</b>
+<b>User:</b> @${username} (<code>${userId}</code>)
+<b>Produk:</b> ${akun.name}
+<b>Harga:</b> Rp ${formattedPrice}
+<b>Sisa Saldo User:</b> Rp ${formattedSaldo}
     `;
     
     await sendTelegramMessage(env.BOT_TOKEN, env.ADMIN_ID, adminMessage);
+    
+    // Kirim notifikasi ke grup log (Lengkap)
+    await sendLogNotification(env, 'PEMBELIAN', user, {
+        name: akun.name,
+        price: akun.price,
+        email: akun.email,
+        password: akun.password,
+        currentSaldo: currentSaldo,
+    });
 }
 
-// Handle deposit callback
+// ** (KEREN) Handle deposit callback **
 async function handleDepositCallback(update, env) {
     const callbackQuery = update.callback_query;
     const user = callbackQuery.from;
     
-    // Cek apakah ada deposit pending di database
     const pendingPayment = await getPendingPayment(env.BOT_DB, user.id);
     if (pendingPayment) {
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "⚠️ Anda masih memiliki deposit yang belum selesai. Silakan selesaikan atau batalkan deposit sebelumnya.", true);
+        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "⚠️ Anda masih memiliki deposit yang belum selesai.", true);
         return;
     }
     
     await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
     
     const minAmount = parseInt(env.MIN_AMOUNT) || 1000;
-    const formattedMinAmount = formatNumber(minAmount);
+    const maxRandom = parseInt(env.RANDOM_AMOUNT_MAX) || 50;
+    
+    userSessions.set(user.id, { action: 'awaiting_deposit_nominal' });
     
     const message = `
-<b>Masukkan nominal deposit</b>
+💳 <b>DEPOSIT SALDO (QRIS OTOMATIS)</b>
 
-💰 <b>Minimal deposit:</b> <code>Rp ${formattedMinAmount}</code>
+┌ <b>INFORMASI DEPOSIT</b>
+├ 💰 <b>Minimal:</b> <code>Rp ${formatNumber(minAmount)}</code>
+└ 🔢 <b>Kode Unik:</b> Akan ditambah 1-${maxRandom} Rupiah
 
-Silakan ketik jumlah saldo yang ingin Anda deposit:
+Silakan balas pesan ini dengan <b>jumlah nominal</b> yang ingin Anda deposit.
+
+Contoh: <code>10000</code>
     `;
     
-    return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
+    const keyboard = {
+        inline_keyboard: [
+            [{ text: "🔙 Batal", callback_data: "back_to_main" }]
+        ]
+    };
+    
+    return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, keyboard);
 }
 
-// Handle message deposit
+// ** (KEREN) Handle message deposit **
 async function handleDepositMessage(update, env) {
     const message = update.message;
     const user = message.from;
     const text = message.text;
+
+    const session = userSessions.get(user.id);
     
-    // Cek apakah ada deposit pending di database
+    if (session?.action !== 'awaiting_deposit_nominal') {
+        // Jika admin, biarkan admin handler
+        if (user.id.toString() === env.ADMIN_ID && userSessions.has(user.id)) {
+             return null;
+        }
+        // Jika user biasa, abaikan pesan
+        return null; 
+    }
+    
+    userSessions.delete(user.id); 
+
     const pendingPayment = await getPendingPayment(env.BOT_DB, user.id);
     if (pendingPayment) {
         const responseMessage = `
 ⚠️ <b>Anda masih memiliki deposit yang belum selesai.</b>
-
-Silakan selesaikan atau batalkan deposit sebelumnya sebelum melakukan deposit baru.
+Silakan selesaikan atau batalkan deposit sebelumnya.
         `;
         return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
     }
@@ -597,12 +700,13 @@ Silakan selesaikan atau batalkan deposit sebelumnya sebelum melakukan deposit ba
         const minAmount = parseInt(env.MIN_AMOUNT) || 1000;
         
         if (isNaN(nominal) || nominal <= 0) {
-            throw new Error("Nominal tidak valid");
+             const responseMessage = "⚠️ <b>Nominal tidak valid.</b> Harap masukkan angka saja, contoh: <code>10000</code>";
+             return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
         }
         
         if (nominal < minAmount) {
             const formattedMinAmount = formatNumber(minAmount);
-            const responseMessage = `⚠️ <b>Nominal deposit minimal Rp ${formattedMinAmount}.</b>`;
+            const responseMessage = `⚠️ <b>Minimal deposit adalah Rp ${formattedMinAmount}.</b>`;
             return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
         }
         
@@ -615,9 +719,8 @@ Silakan selesaikan atau batalkan deposit sebelumnya sebelum melakukan deposit ba
     }
 }
 
-// Buat QRIS dan konfirmasi
+// ** (KEREN) Buat QRIS dan konfirmasi **
 async function createQrisAndConfirm(env, user, nominal) {
-    // Gunakan fungsi getRandomAmount yang baru dengan konfigurasi dari env
     const randomAddition = getRandomAmount(env);
     const finalNominal = nominal + randomAddition;
     
@@ -629,14 +732,13 @@ async function createQrisAndConfirm(env, user, nominal) {
             const qrisUrl = data.data.download_url;
             const transactionId = data.data["kode transaksi"];
             
-            // Simpan data pembayaran pending ke database
             const paymentData = {
                 nominal: nominal,
                 finalNominal: finalNominal,
                 transactionId: transactionId,
                 timestamp: new Date(),
                 status: "pending",
-                messageId: null // akan diisi setelah mengirim pesan
+                messageId: null 
             };
             
             await savePendingPayment(env.BOT_DB, user.id, paymentData);
@@ -648,43 +750,39 @@ async function createQrisAndConfirm(env, user, nominal) {
                 inline_keyboard: [
                     [
                         { text: "✅ Konfirmasi Pembayaran", callback_data: `confirm_payment_${transactionId}` },
-                        { text: "❌ Batalkan Pembayaran", callback_data: "cancel_payment" }
+                        { text: "❌ Batalkan", callback_data: "cancel_payment" }
                     ]
                 ]
             };
             
             const caption = `
-<b>Top Up Pending</b>
+⏳ <b>PENDING PAYMENT</b> ⏳
 
-🆔 <b>ID Transaksi:</b> <code>${transactionId}</code>
-💰 <b>Nominal:</b> <code>Rp ${formattedNominal}</code>
-📊 <b>Fee Random:</b> <code>Rp ${randomAddition}</code>
-💳 <b>Total:</b> <code>Rp ${formattedFinal}</code>
-⏰ <b>Expired:</b> <code>10 minutes</code>
+Mohon transfer <b>TEPAT</b> sesuai nominal <b>TOTAL</b> di bawah ini.
 
-<b>Scan QRIS di atas untuk melakukan pembayaran.</b>
+┌ <b>DETAIL TAGIHAN</b>
+├ 🆔 <b>ID Transaksi:</b> <code>${transactionId}</code>
+├ 💰 <b>Nominal:</b> <code>Rp ${formattedNominal}</code>
+├ 🔢 <b>Kode Unik:</b> <code>Rp ${randomAddition}</code>
+└ 💳 <b>TOTAL:</b> <b><code>Rp ${formattedFinal}</code></b>
 
-✅ <i>Setelah melakukan pembayaran, klik tombol "Konfirmasi Pembayaran" di bawah</i>
-❌ <i>Jika ingin membatalkan, klik "Batalkan Pembayaran"</i>
+Scan QRIS di atas untuk membayar.
+Bayar sebelum <b>10 menit</b>.
+
+Klik "✅ Konfirmasi Pembayaran" jika Anda <b>SUDAH</b> transfer.
             `;
             
-            // Kirim photo QRIS dan simpan message ID
             const sentMessage = await sendTelegramPhoto(env.BOT_TOKEN, user.id, qrisUrl, caption, keyboard);
             if (sentMessage && sentMessage.ok) {
-                // Update payment data dengan message ID
                 paymentData.messageId = sentMessage.result.message_id;
                 await savePendingPayment(env.BOT_DB, user.id, paymentData);
             }
             
-            // Kirim notifikasi ke admin
             const adminMessage = `
-<b>Pembayaran Pending</b>
-<b>Username:</b> <code>@${user.username || 'N/A'}</code>
-<b>User ID:</b> <code>${user.id}</code>
-<b>Id Transaksi:</b> <code>${transactionId}</code>
-<b>Nominal:</b> <code>${nominal}</code>
-<b>Fee Random:</b> <code>${randomAddition}</code>
-<b>Total Bayar:</b> <code>${finalNominal}</code>
+⏳ <b>Deposit Pending</b>
+<b>User:</b> @${user.username || 'N/A'} (<code>${user.id}</code>)
+<b>ID:</b> <code>${transactionId}</code>
+<b>Total:</b> <code>Rp ${finalNominal}</code>
             `;
             
             await sendTelegramMessage(env.BOT_TOKEN, env.ADMIN_ID, adminMessage);
@@ -693,58 +791,52 @@ async function createQrisAndConfirm(env, user, nominal) {
         }
     } catch (error) {
         console.error('Error creating QRIS:', error);
-        await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>Terjadi kesalahan saat membuat QRIS. Silakan coba lagi.</b>");
+        await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>Terjadi kesalahan server saat membuat QRIS. Silakan coba lagi.</b>");
     }
 }
 
-// Handle konfirmasi pembayaran
+// ** (KEREN) Handle konfirmasi pembayaran **
 async function handleConfirmPayment(update, env) {
     const callbackQuery = update.callback_query;
     const user = callbackQuery.from;
     const userId = user.id;
     const callbackData = callbackQuery.data;
     
-    // Cek apakah ada pembayaran pending di database
     const paymentData = await getPendingPayment(env.BOT_DB, userId);
     if (!paymentData) {
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Tidak ada deposit yang pending. Silakan mulai deposit baru.", true);
+        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Tidak ada deposit yang pending.", true);
         return;
     }
     
     const transactionId = callbackData.split('_')[2];
     
-    // Pastikan transaction_id sesuai
     if (paymentData.transactionId !== transactionId) {
         await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ ID transaksi tidak sesuai.", true);
         return;
     }
     
-    // Cek apakah pembayaran sudah expired
     const now = new Date();
     const paymentTime = new Date(paymentData.timestamp);
     const diffMinutes = (now - paymentTime) / (1000 * 60);
     
     if (diffMinutes > 10) {
         await removePendingPayment(env.BOT_DB, userId);
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Pembayaran telah expired. Silakan buat deposit baru.", true);
-        
-        // Update pesan
         const expiredCaption = `
-❌ <b>Pembayaran Expired</b>
-
-🆔 <b>ID Transaksi:</b> <code>${transactionId}</code>
-
+❌ <b>PEMBAYARAN EXPIRED</b>
+ID Transaksi: <code>${transactionId}</code>
 Pembayaran telah expired. Silakan buat deposit baru.
         `;
-        
         if (paymentData.messageId) {
             await editMessageCaption(env.BOT_TOKEN, user.id, paymentData.messageId, expiredCaption);
         }
+        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Pembayaran telah expired.", true);
         return;
     }
     
     // Cek pembayaran via API
     try {
+        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "Sedang mengecek pembayaran Anda..."); // Notif loading
+        
         const response = await fetch(`${env.API_CHECK_PAYMENT}?merchant=${env.MERCHANT_ID}&key=${env.API_KEY}`);
         if (response.ok) {
             const data = await response.json();
@@ -761,7 +853,7 @@ Pembayaran telah expired. Silakan buat deposit baru.
                 }
                 
                 if (paymentFound) {
-                    // Pembayaran ditemukan, tambahkan saldo
+                    // Pembayaran ditemukan
                     const users = await loadDB(env.BOT_DB, 'users');
                     const userIdStr = userId.toString();
                     
@@ -775,18 +867,19 @@ Pembayaran telah expired. Silakan buat deposit baru.
                     const formattedNominal = formatNumber(paymentData.nominal);
                     const formattedSaldo = formatNumber(users[userIdStr].saldo);
                     
-                    // Hapus dari pending payments di database
                     await removePendingPayment(env.BOT_DB, userId);
                     
-                    // Edit pesan asli
                     const newCaption = `
-✅ <b>Pembayaran Berhasil Dikonfirmasi!</b>
+✅ <b>DEPOSIT BERHASIL</b> ✅
 
-🆔 <b>ID Transaksi:</b> <code>${transactionId}</code>
-💰 <b>Nominal:</b> <code>Rp ${formattedNominal}</code>
-💳 <b>Saldo Anda Sekarang:</b> <code>Rp ${formattedSaldo}</code>
+Halo <b>${user.first_name}</b>, saldo Anda telah berhasil ditambahkan!
 
-Terima kasih telah melakukan top-up! 😊
+┌ <b>RINGKASAN</b>
+├ 🆔 <b>ID:</b> <code>${transactionId}</code>
+├ 💸 <b>Nominal Masuk:</b> <code>Rp ${formattedNominal}</code>
+└ 💰 <b>Saldo Baru:</b> <b><code>Rp ${formattedSaldo}</code></b>
+
+Terima kasih telah top-up! 😊
                     `;
                     
                     if (paymentData.messageId) {
@@ -795,30 +888,35 @@ Terima kasih telah melakukan top-up! 😊
                             user.id,
                             paymentData.messageId,
                             newCaption
+                            // Hapus keyboard setelah sukses
                         );
                     }
                     
-                    // Kirim notifikasi ke admin
                     const adminMessage = `
-<b>Pembayaran Dikonfirmasi</b>
-<b>Username:</b> <code>@${user.username || 'null'}</code>
-<b>User ID:</b> <code>${userId}</code>
-<b>Id Transaksi:</b> <code>${transactionId}</code>
-<b>Nominal:</b> <code>${paymentData.nominal}</code>
-<b>Saldo Baru:</b> <code>${users[userIdStr].saldo}</code>
+✅ <b>Deposit Sukses</b>
+<b>User:</b> @${user.username || 'null'} (<code>${userId}</code>)
+<b>ID:</b> <code>${transactionId}</code>
+<b>Nominal:</b> <code>Rp ${paymentData.nominal}</code>
+<b>Saldo Baru:</b> <code>Rp ${formattedSaldo}</code>
                     `;
                     
                     await sendTelegramMessage(env.BOT_TOKEN, env.ADMIN_ID, adminMessage);
+
+                    await sendLogNotification(env, 'DEPOSIT', user, {
+                        transactionId: transactionId,
+                        nominal: paymentData.nominal,
+                        finalNominal: paymentData.finalNominal,
+                        currentSaldo: users[userIdStr].saldo,
+                    });
                     
-                    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "✅ Pembayaran berhasil dikonfirmasi! Saldo telah ditambahkan.", true);
                 } else {
-                    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "⚠️ Pembayaran belum terdeteksi. Silakan tunggu beberapa menit atau hubungi admin jika sudah melakukan pembayaran.", true);
+                    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "⚠️ Pembayaran belum terdeteksi. Silakan tunggu 5 menit lagi dan coba konfirmasi kembali.", true);
                 }
             } else {
-                await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Gagal memeriksa pembayaran. Silakan coba lagi.", true);
+                await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Gagal memeriksa API pembayaran. Coba lagi.", true);
             }
         } else {
-            await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Gagal terhubung ke sistem pembayaran. Silakan coba lagi.", true);
+            await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Gagal terhubung ke sistem pembayaran.", true);
         }
     } catch (error) {
         console.error('Error checking payment:', error);
@@ -826,30 +924,27 @@ Terima kasih telah melakukan top-up! 😊
     }
 }
 
-// Handle batalkan pembayaran
+// ** (KEREN) Handle batalkan pembayaran **
 async function handleCancelPayment(update, env) {
     const callbackQuery = update.callback_query;
     const user = callbackQuery.from;
     const userId = user.id;
     
-    // Cek apakah ada pembayaran pending di database
     const paymentData = await getPendingPayment(env.BOT_DB, userId);
     if (!paymentData) {
         await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Tidak ada deposit yang pending.", true);
         return;
     }
     
-    // Hapus dari pending payments di database
     const transactionId = paymentData.transactionId;
     await removePendingPayment(env.BOT_DB, userId);
     
-    // Edit pesan asli
     const newCaption = `
-❌ <b>Pembayaran Dibatalkan</b>
+❌ <b>PEMBAYARAN DIBATALKAN</b>
 
 🆔 <b>ID Transaksi:</b> <code>${transactionId}</code>
 
-Pembayaran telah dibatalkan. Anda dapat melakukan deposit kembali kapan saja.
+Pembayaran telah dibatalkan. Anda dapat melakukan deposit baru kapan saja.
     `;
     
     if (paymentData.messageId) {
@@ -858,38 +953,40 @@ Pembayaran telah dibatalkan. Anda dapat melakukan deposit kembali kapan saja.
             user.id,
             paymentData.messageId,
             newCaption
+            // Hapus keyboard
         );
     }
     
-    // Kirim notifikasi ke admin
     const adminMessage = `
-<b>Pembayaran Dibatalkan</b>
-<b>Username:</b> <code>@${user.username || 'null'}</code>
-<b>User ID:</b> <code>${userId}</code>
-<b>Id Transaksi:</b> <code>${transactionId}</code>
+❌ <b>Deposit Batal</b>
+<b>User:</b> @${user.username || 'null'} (<code>${userId}</code>)
+<b>ID:</b> <code>${transactionId}</code>
     `;
     
     await sendTelegramMessage(env.BOT_TOKEN, env.ADMIN_ID, adminMessage);
-    
     await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Pembayaran telah dibatalkan.", true);
 }
 
-// Handle admin command
+
+// --- 🌟 ADMIN HANDLER KEREN 🌟 ---
+
+// ** (KEREN) Handle admin command **
 async function handleAdmin(update, env) {
     const message = update.message;
     const user = message.from;
     
     if (user.id.toString() !== env.ADMIN_ID) {
         const responseMessage = `
-❌ <b>Akses ditolak!</b>
-
+❌ <b>Akses Ditolak!</b>
 Hanya admin yang dapat menggunakan perintah ini.
         `;
         return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
     }
     
     const users = await loadDB(env.BOT_DB, 'users');
+    const accounts = await loadDB(env.BOT_DB, 'accounts'); // Ambil info stok
     const totalMembers = Object.keys(users).length;
+    const totalStok = Object.keys(accounts).length;
     
     const keyboard = {
         inline_keyboard: [
@@ -902,29 +999,33 @@ Hanya admin yang dapat menggunakan perintah ini.
                 { text: "🗑️ Hapus Akun", callback_data: "admin_hapus_akun" }
             ],
             [
-                { text: "👥 Cek Member", callback_data: "admin_cek_member" }
-            ],
-            [
+                { text: "👥 Cek Member", callback_data: "admin_cek_member" },
                 { text: "📢 Broadcast", callback_data: "admin_broadcast" }
             ],
             [
-                { text: "⏰ Cek Pending Payments", callback_data: "admin_cek_pending" }
+                { text: "⏰ Cek Pending", callback_data: "admin_cek_pending" }
             ]
         ]
     };
     
     const adminMessage = `
-👮 <b>Admin Menu</b>
+👮‍♂️ <b>PANEL ADMIN</b> 👮‍♂️
 
-👥 <b>Total Member:</b> <code>${totalMembers}</code>
+Halo <b>${user.first_name}</b>! Anda login sebagai admin.
 
-Silakan pilih aksi yang ingin dilakukan dengan menekan tombol di bawah ini:
+┌ <b>INFORMASI BOT</b>
+├ 👥 <b>Total Member:</b> <code>${totalMembers}</code>
+└ 📦 <b>Total Stok:</b> <code>${totalStok}</code>
+
+Silakan pilih aksi yang ingin dilakukan:
     `;
     
     return await sendTelegramMessage(env.BOT_TOKEN, user.id, adminMessage, keyboard);
 }
 
-// Handle admin actions callback
+// (handleAdminActions, handleAdminMessage, handleBroadcast, cleanupExpiredPayments - TETAP SAMA)
+// ... (Fungsi-fungsi ini tidak perlu diubah, sudah fungsional)
+
 async function handleAdminActions(update, env) {
     const callbackQuery = update.callback_query;
     const user = callbackQuery.from;
@@ -943,12 +1044,8 @@ async function handleAdminActions(update, env) {
         case "admin_tambah_saldo":
             message = `
 📝 <b>Tambah Saldo</b>
-
-Kirimkan ID user dan jumlah saldo yang ingin ditambahkan.
-<b>Format:</b> <code>id jumlah</code>
-
-Contoh:
-<code>12345 100</code>
+Kirimkan ID user dan jumlah saldo.
+<b>Format:</b> <code>id jumlah</code> (Contoh: <code>12345 10000</code>)
             `;
             userSessions.set(user.id, { action: 'tambah_saldo' });
             break;
@@ -956,12 +1053,8 @@ Contoh:
         case "admin_kurangi_saldo":
             message = `
 📝 <b>Kurangi Saldo</b>
-
-Kirimkan ID user dan jumlah saldo yang ingin dikurangi.
-<b>Format:</b> <code>id jumlah</code>
-
-Contoh:
-<code>12345 50</code>
+Kirimkan ID user dan jumlah saldo.
+<b>Format:</b> <code>id jumlah</code> (Contoh: <code>12345 5000</code>)
             `;
             userSessions.set(user.id, { action: 'kurangi_saldo' });
             break;
@@ -969,7 +1062,6 @@ Contoh:
         case "admin_tambah_akun":
             message = `
 🛒 <b>Tambah Akun Produk</b>
-
 Silakan masukkan <b>nama produk</b> untuk memulai.
             `;
             userSessions.set(user.id, { 
@@ -982,8 +1074,7 @@ Silakan masukkan <b>nama produk</b> untuk memulai.
         case "admin_hapus_akun":
             message = `
 🗑️ <b>Hapus Akun</b>
-
-Kirimkan <b>email akun</b> yang ingin dihapus.
+Kirimkan <b>email/username akun</b> yang ingin dihapus.
             `;
             userSessions.set(user.id, { action: 'hapus_akun' });
             break;
@@ -1014,11 +1105,8 @@ ${saldoInfo}
         case "admin_broadcast":
             message = `
 📢 <b>Broadcast Message</b>
-
-Balas pesan ini dengan perintah <code>/broadcast</code> untuk mengirim pesan ke semua user.
-
-Atau gunakan format:
-<code>/broadcast id1,id2,id3</code> untuk mengirim ke user tertentu.
+Balas pesan ini dengan perintah <code>/broadcast</code> untuk mengirim ke semua user.
+Format lain: <code>/broadcast id1,id2</code>
             `;
             break;
             
@@ -1041,8 +1129,7 @@ Atau gunakan format:
                 
                 message = `
 ⏰ <b>Pending Payments</b>
-
-📋 <b>Total:</b> <code>${pendingCount}</code>
+<b>Total:</b> <code>${pendingCount}</code>
 
 ${pendingInfo}
                 `;
@@ -1050,10 +1137,48 @@ ${pendingInfo}
             break;
     }
     
-    return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
+    return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, {
+         inline_keyboard: [[{ text: "🔙 Kembali ke Panel Admin", callback_data: "admin_back" }]]
+    });
 }
 
-// Handle admin message processing
+// ** (KEREN) Tambahkan callback 'admin_back' di handleAdminActions **
+// Tambahkan case ini di dalam switch (callbackData) di fungsi handleAdminActions
+/*
+...
+        case "admin_cek_pending":
+            // ... (kode di atas)
+            break;
+            
+        case "admin_back":
+            // Panggil fungsi handleAdmin, tapi sebagai editan
+            const users_admin = await loadDB(env.BOT_DB, 'users');
+            const accounts_admin = await loadDB(env.BOT_DB, 'accounts');
+            const totalMembers_admin = Object.keys(users_admin).length;
+            const totalStok_admin = Object.keys(accounts_admin).length;
+            
+            const keyboard_admin = {
+                inline_keyboard: [
+                    [ { text: "➕ Tambah Saldo", callback_data: "admin_tambah_saldo" }, { text: "➖ Kurangi Saldo", callback_data: "admin_kurangi_saldo" } ],
+                    [ { text: "🛒 Tambah Akun", callback_data: "admin_tambah_akun" }, { text: "🗑️ Hapus Akun", callback_data: "admin_hapus_akun" } ],
+                    [ { text: "👥 Cek Member", callback_data: "admin_cek_member" }, { text: "📢 Broadcast", callback_data: "admin_broadcast" } ],
+                    [ { text: "⏰ Cek Pending", callback_data: "admin_cek_pending" } ]
+                ]
+            };
+            
+            message = `
+👮‍♂️ <b>PANEL ADMIN</b> 👮‍♂️
+Halo <b>${user.first_name}</b>! Anda login sebagai admin.
+┌ <b>INFORMASI BOT</b>
+├ 👥 <b>Total Member:</b> <code>${totalMembers_admin}</code>
+└ 📦 <b>Total Stok:</b> <code>${totalStok_admin}</code>
+Silakan pilih aksi yang ingin dilakukan:
+            `;
+            userSessions.delete(user.id); // Hapus sesi admin
+            return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, keyboard_admin);
+*/
+
+
 async function handleAdminMessage(update, env) {
     const message = update.message;
     const user = message.from;
@@ -1078,6 +1203,11 @@ async function handleAdminMessage(update, env) {
                 const [targetId, amountStr] = text.split(' ');
                 const amount = parseInt(amountStr);
                 
+                if (!targetId || !amount || isNaN(amount)) {
+                     await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>Format salah.</b> Harap kirim <code>ID JUMLAH</code>, contoh: <code>12345 10000</code>");
+                     return;
+                }
+                
                 if (!users[targetId]) {
                     await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>User tidak ditemukan.</b>");
                     userSessions.delete(user.id);
@@ -1087,6 +1217,10 @@ async function handleAdminMessage(update, env) {
                 if (session.action === 'tambah_saldo') {
                     users[targetId].saldo += amount;
                 } else {
+                    if (users[targetId].saldo < amount) {
+                        await sendTelegramMessage(env.BOT_TOKEN, user.id, `❌ <b>Gagal.</b> Saldo user (<code>${users[targetId].saldo}</code>) lebih kecil dari jumlah yang ingin dikurangi (<code>${amount}</code>).`);
+                        return;
+                    }
                     users[targetId].saldo -= amount;
                 }
                 
@@ -1103,9 +1237,9 @@ async function handleAdminMessage(update, env) {
                 `;
                 
                 const userMsg = `
-✅ <b>Saldo Anda telah diperbarui!</b>
-🔹 ${session.action === 'tambah_saldo' ? 'Penambahan' : 'Pengurangan'}: <code>Rp ${formattedAmount}</code>
-💰 <b>Saldo saat ini:</b> <code>Rp ${formattedSaldo}</code>
+🔔 <b>UPDATE SALDO OLEH ADMIN</b>
+${session.action === 'tambah_saldo' ? 'Penambahan' : 'Pengurangan'} Saldo: <code>Rp ${formattedAmount}</code>
+<b>Saldo Anda Saat Ini:</b> <code>Rp ${formattedSaldo}</code>
                 `;
                 
                 await sendTelegramMessage(env.BOT_TOKEN, user.id, adminMsg);
@@ -1129,7 +1263,7 @@ async function handleAdminMessage(update, env) {
                 } else if (step === 'password') {
                     data.password = text;
                     session.step = 'harga';
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "<b>Masukkan harga:</b>");
+                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "<b>Masukkan harga (angka saja):</b>");
                 } else if (step === 'harga') {
                     data.price = parseInt(text);
                     if (isNaN(data.price)) {
@@ -1142,16 +1276,22 @@ async function handleAdminMessage(update, env) {
                 } else if (step === 'deskripsi') {
                     data.description = text;
                     session.step = 'catatan';
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "<b>Masukkan catatan akun (misal: detail login/2FA)</b>");
+                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "<b>Masukkan catatan akun (misal: 2FA). Ketik 'tidak ada' jika kosong.</b>");
                 } else if (step === 'catatan') {
                     data.note = text.toLowerCase() !== "tidak ada" ? text : "Tidak ada catatan";
                     const formattedPrice = formatNumber(data.price);
                     
+                    if (accounts[data.email]) {
+                        await sendTelegramMessage(env.BOT_TOKEN, user.id, `❌ <b>Gagal!</b> Akun dengan email/user <code>${data.email}</code> sudah ada di database.`);
+                        userSessions.delete(user.id);
+                        return;
+                    }
+
                     accounts[data.email] = data;
                     await saveDB(env.BOT_DB, accounts, 'accounts');
                     
                     const addedAccountMsg = `
-<b>Akun berhasil ditambahkan:</b>
+✅ <b>Akun berhasil ditambahkan:</b>
 <b>Nama:</b> <code>${data.name}</code>
 <b>Email:</b> <code>${data.email}</code>
 <b>Password:</b> <code>${data.password}</code>
@@ -1171,7 +1311,7 @@ async function handleAdminMessage(update, env) {
                     await saveDB(env.BOT_DB, accounts, 'accounts');
                     await sendTelegramMessage(env.BOT_TOKEN, user.id, "✅ <b>Akun berhasil dihapus.</b>");
                 } else {
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>Akun tidak ditemukan.</b>");
+                    await sendTelegramMessage(env.BOT_TOKEN, user.id, `❌ <b>Akun <code>${text}</code> tidak ditemukan.</b>`);
                 }
                 userSessions.delete(user.id);
                 break;
@@ -1183,27 +1323,16 @@ async function handleAdminMessage(update, env) {
     }
 }
 
-// Handle broadcast command
 async function handleBroadcast(update, env) {
     const message = update.message;
     const user = message.from;
     
     if (user.id.toString() !== env.ADMIN_ID) {
-        const responseMessage = `
-❌ <b>Akses Ditolak!</b>
-
-Anda tidak memiliki akses ke perintah ini.
-        `;
-        return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
+        return await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>Akses Ditolak!</b>");
     }
     
     if (!message.reply_to_message) {
-        const responseMessage = `
-⚠️ <b>Perintah Tidak Lengkap!</b>
-
-Silakan balas pesan yang ingin di-broadcast dengan perintah <code>/broadcast</code>, atau tambahkan ID spesifik dengan format <code>/broadcast id1,id2,...</code> di balasan.
-        `;
-        return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
+        return await sendTelegramMessage(env.BOT_TOKEN, user.id, "⚠️ <b>Perintah Salah!</b>\nBalas pesan yang ingin di-broadcast dengan perintah <code>/broadcast</code>.");
     }
     
     const replyMessage = message.reply_to_message;
@@ -1213,41 +1342,36 @@ Silakan balas pesan yang ingin di-broadcast dengan perintah <code>/broadcast</co
     const targetUsers = specificIds.length > 0 ? specificIds : Object.keys(users);
     const targetType = specificIds.length > 0 ? "ID tertentu" : "semua pengguna";
     
+    await sendTelegramMessage(env.BOT_TOKEN, user.id, `🚀 <b>Memulai Broadcast...</b>\nTarget: ${targetType} (${targetUsers.length} user).`);
+
     let successCount = 0;
     let failedCount = 0;
     
-    // Kirim broadcast ke setiap user
     for (const targetId of targetUsers) {
         try {
             if (replyMessage.text) {
                 await sendTelegramMessage(env.BOT_TOKEN, parseInt(targetId), replyMessage.text);
             } else {
-                // Untuk tipe media lain, kirim pesan teks sederhana
-                await sendTelegramMessage(env.BOT_TOKEN, parseInt(targetId), "📢 <b>Pesan Broadcast dari Admin</b>\n\nHubungi admin untuk informasi lebih lanjut.");
+                // (Fitur broadcast media belum didukung di kode ini, kirim teks saja)
+                await sendTelegramMessage(env.BOT_TOKEN, parseInt(targetId), "📢 <b>Pesan Broadcast dari Admin</b>\n\n(Admin mengirim pesan media yang tidak dapat diteruskan, silakan cek channel info).");
             }
             successCount++;
         } catch (error) {
             failedCount++;
         }
-        
-        // Tunggu sebentar untuk menghindari rate limit
-        await new Promise(resolve => setTimeout(resolve, 100));
+        await new Promise(resolve => setTimeout(resolve, 100)); // Rate limit 100ms
     }
     
     const resultMessage = `
 🎉 <b>Broadcast Selesai!</b>
-
 📍 Target: <b>${targetType}</b>
-✅ <b>Berhasil terkirim:</b> <code>${successCount}</code>
-❌ <b>Gagal terkirim:</b> <code>${failedCount}</code>
-
-Terima kasih telah menggunakan bot ini! 😊
+✅ Berhasil terkirim: <code>${successCount}</code>
+❌ Gagal terkirim: <code>${failedCount}</code>
     `;
     
     await sendTelegramMessage(env.BOT_TOKEN, user.id, resultMessage);
 }
 
-// Cleanup expired payments secara otomatis
 async function cleanupExpiredPayments(env) {
     try {
         const pendingPayments = await loadPendingPayments(env.BOT_DB);
@@ -1259,20 +1383,16 @@ async function cleanupExpiredPayments(env) {
             const diffMinutes = (now - paymentTime) / (1000 * 60);
             
             if (diffMinutes > 10) { // Expired setelah 10 menit
-                // Kirim notifikasi expired ke user
                 const expiredCaption = `
-❌ <b>Pembayaran Expired</b>
-
-🆔 <b>ID Transaksi:</b> <code>${payment.transactionId}</code>
-
-Pembayaran telah expired. Silakan buat deposit baru.
+❌ <b>PEMBAYARAN EXPIRED</b>
+ID Transaksi: <code>${payment.transactionId}</code>
+Pembayaran telah dibatalkan. Silakan buat deposit baru.
                 `;
                 
                 if (payment.messageId) {
                     await editMessageCaption(env.BOT_TOKEN, parseInt(userId), payment.messageId, expiredCaption);
                 }
                 
-                // Hapus dari database
                 await removePendingPayment(env.BOT_DB, parseInt(userId));
                 cleanedCount++;
             }
@@ -1286,18 +1406,119 @@ Pembayaran telah expired. Silakan buat deposit baru.
     }
 }
 
-// Main router handler
+// ** (BARU) Tampilan Web Info Keren **
+function handleInfo(env) {
+    const html = `
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>${env.BOT_NAME || 'Auto Order Bot'} Status</title>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;600&display=swap');
+        body { 
+            font-family: 'Poppins', sans-serif; 
+            background-color: #1a1a2e; 
+            color: #e9e4f5; 
+            text-align: center; 
+            padding: 50px; 
+            display: flex; 
+            justify-content: center; 
+            align-items: center; 
+            min-height: 100vh;
+            box-sizing: border-box;
+        }
+        .container { 
+            background: linear-gradient(145deg, #2a2a4a, #1f1f3a);
+            padding: 30px 40px; 
+            border-radius: 15px; 
+            max-width: 600px; 
+            margin: 0 auto; 
+            box-shadow: 0 10px 35px rgba(0, 0, 0, 0.4); 
+            border: 1px solid rgba(255, 255, 255, 0.1); 
+        }
+        h1 { 
+            color: #f5b11a; 
+            margin-bottom: 10px; 
+            font-weight: 600; 
+            letter-spacing: 1px;
+        }
+        p { 
+            margin-top: 5px; 
+            color: #b8b8d1; 
+            font-size: 1.1em;
+        }
+        .status { 
+            font-size: 1.8em; 
+            font-weight: 600; 
+            color: #4CAF50; 
+            margin: 25px 0;
+            text-shadow: 0 0 10px rgba(76, 175, 80, 0.7);
+        }
+        .link a { 
+            display: inline-block;
+            background-color: #f5b11a;
+            color: #1a1a2e; 
+            text-decoration: none; 
+            font-weight: 600; 
+            padding: 12px 25px;
+            border-radius: 8px;
+            margin-top: 20px;
+            transition: all 0.3s ease;
+        }
+        .link a:hover { 
+            background-color: #fff;
+            box-shadow: 0 0 15px rgba(245, 177, 26, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🤖 ${env.BOT_NAME || 'Auto Order Telegram Bot'}</h1>
+        <p>Worker berhasil diterapkan dan berjalan lancar.</p>
+        <div class="status">STATUS: ONLINE ✅</div>
+        <p>Bot ini adalah sistem order otomatis. Semua interaksi dilakukan melalui Telegram.</p>
+        <div class="link">
+            <a href="https://t.me/${env.BOT_USERNAME || 'YourBotUsername'}" target="_blank">Mulai Chat dengan Bot!</a>
+        </div>
+    </div>
+</body>
+</html>
+    `;
+    return new Response(html, {
+        headers: {
+            'Content-Type': 'text/html',
+        },
+    });
+}
+
+
+// --- ROUTING (Menggunakan itty-router) ---
+
 router.post('/', async (request, env) => {
     try {
         const update = await request.json();
         
-        // Cleanup expired payments setiap kali ada request
         await cleanupExpiredPayments(env);
         
-        // Handle different types of updates
         if (update.message) {
             const text = update.message.text || '';
+            const user = update.message.from;
+            const session = userSessions.get(user.id);
+
+            // Cek jika user sedang dalam sesi deposit, dahulukan.
+            if (session?.action === 'awaiting_deposit_nominal' && !text.startsWith('/')) {
+                const depositResponse = await handleDepositMessage(update, env);
+                if (depositResponse) return new Response(JSON.stringify(depositResponse));
+            }
+            // Cek jika admin sedang dalam sesi, dahulukan.
+            else if (user.id.toString() === env.ADMIN_ID && session && !text.startsWith('/')) {
+                 const adminResponse = await handleAdminMessage(update, env);
+                 if (adminResponse) return new Response(JSON.stringify(adminResponse));
+            }
             
+            // Cek Perintah
             if (text.startsWith('/start')) {
                 return new Response(JSON.stringify(await handleStart(update, env)));
             } else if (text.startsWith('/id')) {
@@ -1306,18 +1527,8 @@ router.post('/', async (request, env) => {
                 return new Response(JSON.stringify(await handleAdmin(update, env)));
             } else if (text.startsWith('/broadcast')) {
                 return new Response(JSON.stringify(await handleBroadcast(update, env)));
-            } else if (update.message.text && !text.startsWith('/')) {
-                // Handle regular messages
-                const user = update.message.from;
-                
-                // Cek jika admin sedang dalam session
-                if (user.id.toString() === env.ADMIN_ID && userSessions.has(user.id)) {
-                    return new Response(JSON.stringify(await handleAdminMessage(update, env)));
-                }
-                
-                // Handle deposit message untuk user biasa
-                return new Response(JSON.stringify(await handleDepositMessage(update, env)));
             }
+
         } else if (update.callback_query) {
             const callbackData = update.callback_query.data;
             
@@ -1334,6 +1545,10 @@ router.post('/', async (request, env) => {
             } else if (callbackData === 'cancel_payment') {
                 return new Response(JSON.stringify(await handleCancelPayment(update, env)));
             } else if (callbackData.startsWith('admin_')) {
+                // (Tambahkan 'admin_back' di sini jika Anda menambahkannya di handleAdminActions)
+                // if (callbackData === 'admin_back') { 
+                //    ... 
+                // }
                 return new Response(JSON.stringify(await handleAdminActions(update, env)));
             } else if (callbackData === 'back_to_main') {
                 return new Response(JSON.stringify(await handleBackToMain(update, env)));
@@ -1347,7 +1562,12 @@ router.post('/', async (request, env) => {
     }
 });
 
-router.get('/', () => new Response('Telegram Bot is running!'));
+// Endpoint Tampilan Web
+router.get('/info', (request, env) => handleInfo(env));
+// Endpoint root
+router.get('/', () => new Response('Telegram Bot is running! Use /info for status.'));
+// Fallback
+router.all('*', () => new Response('Not Found', { status: 404 }));
 
 export default {
     fetch: router.handle
