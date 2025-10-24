@@ -59,7 +59,7 @@ async function displayMainMenu(env, user, isEdit = false, messageId = null, call
 
     // ** Teks Persis Sesuai Request + Versi **
     const message = `
-<i>Versi 1.0 Beta</i>
+<i>Versi 1.1 Beta</i>
 
 Halo, <b>${userFirstName}</b>! 👋
 
