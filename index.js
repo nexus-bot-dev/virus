@@ -298,18 +298,40 @@ router.post('/', async (request, env, ctx) => {
                  else if (cbData === 'back_to_main')        responseObj = await handleBackToMain(update, env);
              }
         }
-
-        // Handle return values
-        if (responseObj instanceof Response) return responseObj;
-        else if (responseObj) return new Response(JSON.stringify(responseObj));
-        else return new Response('OK');
-    } catch (e) { console.error('TG Update Err:', e); return new Response('Internal Server Error', { status: 500 }); }
+                // Handle deposit message untuk user biasa
+                return new Response(JSON.stringify(await handleDepositMessage(update, env)));
+            }
+        } else if (update.callback_query) {
+            const callbackData = update.callback_query.data;
+            
+            if (callbackData === 'beli_akun') {
+                return new Response(JSON.stringify(await handleBeliAkunCallback(update, env)));
+            } else if (callbackData.startsWith('group_')) {
+                return new Response(JSON.stringify(await handleDetailAkun(update, env)));
+            } else if (callbackData.startsWith('beli_')) {
+                return new Response(JSON.stringify(await handleProsesPembelian(update, env)));
+            } else if (callbackData === 'deposit') {
+                return new Response(JSON.stringify(await handleDepositCallback(update, env)));
+            } else if (callbackData.startsWith('confirm_payment_')) {
+                return new Response(JSON.stringify(await handleConfirmPayment(update, env)));
+            } else if (callbackData === 'cancel_payment') {
+                return new Response(JSON.stringify(await handleCancelPayment(update, env)));
+            } else if (callbackData.startsWith('admin_')) {
+                return new Response(JSON.stringify(await handleAdminActions(update, env)));
+            } else if (callbackData === 'back_to_main') {
+                return new Response(JSON.stringify(await handleBackToMain(update, env)));
+            }
+        }
+        
+        return new Response('OK');
+    } catch (error) {
+        console.error('Error handling update:', error);
+        return new Response('Error', { status: 500 });
+    }
 });
 
-// Endpoint Tampilan Web & Fallback
-router.get('/info', (req, env) => handleInfo(env));
-router.get('/', (req, env) => new Response('💎 Bot Aktif! /info untuk status.', { headers: { 'Content-Type': 'text/plain; charset=utf-8' } }));
-router.all('*', () => new Response('404 Not Found - Endpoint tidak valid.', { status: 404 }));
+router.get('/', () => new Response('Telegram Bot is running!'));
 
-// Export handler
-export default { fetch: router.handle };
+export default {
+    fetch: router.handle
+};
