@@ -2,1353 +2,1319 @@
 
 const router = Router();
 
-// In-memory storage untuk sessions (sementara)
+// -----------------------------
+// In-memory / Constants
+// -----------------------------
 const userSessions = new Map();
+const messageTimestamps = new Map(); // anti-spam timestamps
+const START_TIME = Date.now();
 
-// Helper functions untuk KV storage
+// -----------------------------
+// KV helpers (Cloudflare Worker KV)
+// -----------------------------
+async function kvGet(env, key) {
+  try {
+    const raw = await env.BOT_DB.get(key, { type: 'json' });
+    return raw || {};
+  } catch (e) {
+    console.error('KV get error', key, e);
+    return {};
+  }
+}
+async function kvPut(env, key, value) {
+  try {
+    await env.BOT_DB.put(key, JSON.stringify(value));
+    return true;
+  } catch (e) {
+    console.error('KV put error', key, e);
+    return false;
+  }
+}
+
+// Backwards-compatible loaders used in original file
 async function loadDB(binding, dbType) {
-    try {
-        const data = await binding.get(dbType, 'json');
-        return data || {};
-    } catch (error) {
-        return {};
-    }
+  return await kvGet({ BOT_DB: binding }, dbType);
 }
-
 async function saveDB(binding, data, dbType) {
-    try {
-        await binding.put(dbType, JSON.stringify(data));
-        return true;
-    } catch (error) {
-        console.error('Error saving to KV:', error);
-        return false;
-    }
+  return await kvPut({ BOT_DB: binding }, dbType);
 }
 
-// Helper functions untuk pending payments
+// pending payments (original structure)
 async function loadPendingPayments(binding) {
-    try {
-        const data = await binding.get('pending_payments', 'json');
-        return data || {};
-    } catch (error) {
-        return {};
-    }
+  return await kvGet({ BOT_DB: binding }, 'pending_payments');
 }
-
 async function savePendingPayment(binding, userId, paymentData) {
-    try {
-        const pendingPayments = await loadPendingPayments(binding);
-        pendingPayments[userId] = {
-            ...paymentData,
-            timestamp: paymentData.timestamp.toISOString() // Convert Date to string
-        };
-        await binding.put('pending_payments', JSON.stringify(pendingPayments));
-        return true;
-    } catch (error) {
-        console.error('Error saving pending payment:', error);
-        return false;
-    }
+  try {
+    const pending = await loadPendingPayments(binding);
+    pending[userId] = {
+      ...paymentData,
+      timestamp: paymentData.timestamp instanceof Date ? paymentData.timestamp.toISOString() : paymentData.timestamp
+    };
+    await kvPut({ BOT_DB: binding }, 'pending_payments', pending);
+    return true;
+  } catch (e) {
+    console.error('savePendingPayment', e);
+    return false;
+  }
 }
-
 async function removePendingPayment(binding, userId) {
-    try {
-        const pendingPayments = await loadPendingPayments(binding);
-        if (pendingPayments[userId]) {
-            delete pendingPayments[userId];
-            await binding.put('pending_payments', JSON.stringify(pendingPayments));
-        }
-        return true;
-    } catch (error) {
-        console.error('Error removing pending payment:', error);
-        return false;
+  try {
+    const pending = await loadPendingPayments(binding);
+    if (pending[userId]) {
+      delete pending[userId];
+      await kvPut({ BOT_DB: binding }, 'pending_payments', pending);
     }
+    return true;
+  } catch (e) {
+    console.error('removePendingPayment', e);
+    return false;
+  }
 }
-
 async function getPendingPayment(binding, userId) {
-    try {
-        const pendingPayments = await loadPendingPayments(binding);
-        const payment = pendingPayments[userId];
-        if (payment) {
-            // Convert string back to Date object
-            return {
-                ...payment,
-                timestamp: new Date(payment.timestamp)
-            };
-        }
-        return null;
-    } catch (error) {
-        console.error('Error getting pending payment:', error);
-        return null;
-    }
+  try {
+    const pending = await loadPendingPayments(binding);
+    const p = pending[userId];
+    if (!p) return null;
+    return { ...p, timestamp: new Date(p.timestamp) };
+  } catch (e) {
+    console.error('getPendingPayment', e);
+    return null;
+  }
 }
 
-// Format number dengan titik
-function formatNumber(num) {
-    return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
+// -----------------------------
+// Format helpers
+// -----------------------------
+function formatNumber(num = 0) {
+  return num.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ".");
 }
-
-// Generate random number dengan konfigurasi dari environment
+function niceTime(d = new Date()) {
+  // return e.g. 24 Okt 2025, 13:20 WIB
+  const months = ['Jan','Feb','Mar','Apr','Mei','Jun','Jul','Agu','Sep','Okt','Nov','Des'];
+  return `${d.getDate()} ${months[d.getMonth()]} ${d.getFullYear()}, ${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')} WIB`;
+}
 function getRandomAmount(env) {
-    const min = parseInt(env.RANDOM_AMOUNT_MIN) || 1;
-    const max = parseInt(env.RANDOM_AMOUNT_MAX) || 50;
-    return Math.floor(Math.random() * (max - min + 1)) + min;
+  const min = parseInt(env.RANDOM_AMOUNT_MIN) || 1;
+  const max = parseInt(env.RANDOM_AMOUNT_MAX) || 50;
+  return Math.floor(Math.random() * (max - min + 1)) + min;
+}
+function formatUptime(ms) {
+  const s = Math.floor(ms/1000);
+  const days = Math.floor(s / 86400);
+  const hours = Math.floor((s % 86400) / 3600);
+  const minutes = Math.floor((s % 3600) / 60);
+  const seconds = s % 60;
+  return `${days}d ${hours}h ${minutes}m ${seconds}s`;
 }
 
-// Kirim request ke Telegram API
-async function sendTelegramMessage(botToken, chatId, text, replyMarkup = null, parseMode = 'HTML') {
-    const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
-    
-    const payload = {
-        chat_id: chatId,
-        text: text,
-        parse_mode: parseMode
-    };
-    
-    if (replyMarkup) {
-        payload.reply_markup = replyMarkup;
-    }
-    
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload)
-        });
-        
-        return await response.json();
-    } catch (error) {
-        console.error('Error sending Telegram message:', error);
-        return null;
-    }
+// -----------------------------
+// Telegram API helpers
+// -----------------------------
+async function telegramSend(botToken, chatId, text, replyMarkup = null, parseMode = 'HTML') {
+  const url = `https://api.telegram.org/bot${botToken}/sendMessage`;
+  const payload = { chat_id: chatId, text, parse_mode: parseMode };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return await res.json();
+  } catch (e) {
+    console.error('telegramSend error', e);
+    return null;
+  }
+}
+async function telegramSendPhoto(botToken, chatId, photoUrl, caption = '', replyMarkup = null, parseMode='HTML') {
+  const url = `https://api.telegram.org/bot${botToken}/sendPhoto`;
+  const payload = { chat_id: chatId, photo: photoUrl, caption, parse_mode: parseMode };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return await res.json();
+  } catch (e) {
+    console.error('telegramSendPhoto error', e);
+    return null;
+  }
+}
+async function telegramEditText(botToken, chatId, messageId, text, replyMarkup = null, parseMode='HTML') {
+  const url = `https://api.telegram.org/bot${botToken}/editMessageText`;
+  const payload = { chat_id: chatId, message_id: messageId, text, parse_mode: parseMode };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return await res.json();
+  } catch (e) {
+    console.error('telegramEditText error', e);
+    return null;
+  }
+}
+async function telegramEditCaption(botToken, chatId, messageId, caption, replyMarkup=null, parseMode='HTML') {
+  const url = `https://api.telegram.org/bot${botToken}/editMessageCaption`;
+  const payload = { chat_id: chatId, message_id: messageId, caption, parse_mode: parseMode };
+  if (replyMarkup) payload.reply_markup = replyMarkup;
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return await res.json();
+  } catch (e) {
+    console.error('telegramEditCaption error', e);
+    return null;
+  }
+}
+async function answerCallback(botToken, callbackQueryId, text=null, showAlert=false) {
+  const url = `https://api.telegram.org/bot${botToken}/answerCallbackQuery`;
+  const payload = { callback_query_id: callbackQueryId };
+  if (text) { payload.text = text; payload.show_alert = showAlert; }
+  try {
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    return await res.json();
+  } catch (e) {
+    console.error('answerCallback error', e);
+    return null;
+  }
 }
 
-// Kirim photo ke Telegram
-async function sendTelegramPhoto(botToken, chatId, photoUrl, caption = '', replyMarkup = null, parseMode = 'HTML') {
-    const url = `https://api.telegram.org/bot${botToken}/sendPhoto`;
-    
-    const payload = {
-        chat_id: chatId,
-        photo: photoUrl,
-        caption: caption,
-        parse_mode: parseMode
-    };
-    
-    if (replyMarkup) {
-        payload.reply_markup = replyMarkup;
-    }
-    
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload)
-        });
-        
-        return await response.json();
-    } catch (error) {
-        console.error('Error sending Telegram photo:', error);
-        return null;
-    }
+// -----------------------------
+// Config & Ban helpers
+// -----------------------------
+async function loadConfig(env) {
+  const cfg = await kvGet(env, 'bot_config');
+  return {
+    bonus: cfg.bonus || { mode: 'percent', percent: 0, ranges: [] },
+    spam: cfg.spam || { limit: 10, window: 10 },
+    logGroupId: cfg.logGroupId || null,
+    ...cfg
+  };
+}
+async function saveConfig(env, config) {
+  return await kvPut(env, 'bot_config', config);
+}
+async function getBans(env) {
+  return await kvGet(env, 'banned_users');
+}
+async function addBan(env, userId, reason='banned') {
+  const bans = await getBans(env);
+  bans[userId] = { reason, timestamp: new Date().toISOString() };
+  await kvPut(env, 'banned_users', bans);
+}
+async function removeBan(env, userId) {
+  const bans = await getBans(env);
+  if (bans[userId]) {
+    delete bans[userId];
+    await kvPut(env, 'banned_users', bans);
+  }
+}
+async function isBanned(env, userId) {
+  const bans = await getBans(env);
+  return !!bans[userId];
 }
 
-// Edit message text
-async function editMessageText(botToken, chatId, messageId, text, replyMarkup = null, parseMode = 'HTML') {
-    const url = `https://api.telegram.org/bot${botToken}/editMessageText`;
-    
-    const payload = {
-        chat_id: chatId,
-        message_id: messageId,
-        text: text,
-        parse_mode: parseMode
-    };
-    
-    if (replyMarkup) {
-        payload.reply_markup = replyMarkup;
+// Send to log group in quoted style if set
+async function sendLog(env, title, items = []) {
+  try {
+    const cfg = await loadConfig(env.BOT_DB);
+    const gid = cfg.logGroupId;
+    if (!gid) return;
+    // build quote style message
+    // title line + each item prefixed with > for quote
+    // Example:
+    // 📦 Transaksi Sukses
+    // > 👤 User: @username (ID: 123)
+    // > 💳 Jenis: Deposit
+    // ...
+    let text = `${title}\n`;
+    for (const it of items) {
+      text += `> ${it}\n`;
     }
-    
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload)
-        });
-        
-        return await response.json();
-    } catch (error) {
-        console.error('Error editing message text:', error);
-        return null;
-    }
+    // add small tags line
+    await telegramSend(env.BOT_TOKEN, gid, text);
+  } catch (e) {
+    console.error('sendLog error', e);
+  }
 }
 
-// Edit message caption
-async function editMessageCaption(botToken, chatId, messageId, caption, replyMarkup = null, parseMode = 'HTML') {
-    const url = `https://api.telegram.org/bot${botToken}/editMessageCaption`;
-    
-    const payload = {
-        chat_id: chatId,
-        message_id: messageId,
-        caption: caption,
-        parse_mode: parseMode
-    };
-    
-    if (replyMarkup) {
-        payload.reply_markup = replyMarkup;
+// -----------------------------
+// Anti-spam: track messages and auto-ban
+// -----------------------------
+async function checkAntiSpam(env, userId, username) {
+  try {
+    const cfg = await loadConfig(env.BOT_DB);
+    const limit = (cfg.spam && cfg.spam.limit) || 10;
+    const windowSec = (cfg.spam && cfg.spam.window) || 10;
+    const now = Date.now();
+    const arr = messageTimestamps.get(userId) || [];
+    const windowMs = windowSec * 1000;
+    const pruned = arr.filter(t => now - t <= windowMs);
+    pruned.push(now);
+    messageTimestamps.set(userId, pruned);
+    if (pruned.length > limit) {
+      // auto ban
+      await addBan(env, userId, 'auto-spam');
+      // notify admin
+      await telegramSend(env.BOT_TOKEN, env.ADMIN_ID, `<b>🚫 Auto-Ban (Anti-Spam)</b>\nUser: @${username || 'N/A'} (${userId})\nCount: ${pruned.length} msgs in ${windowSec}s`);
+      await sendLog(env, '🚫 Auto-Ban (Anti-Spam)', [
+        `👤 User: @${username || 'N/A'} (ID: ${userId})`,
+        `🧠 Alasan: Spam terlalu banyak dalam ${windowSec} detik`,
+        `⏰ Waktu: ${niceTime(new Date())}`
+      ]);
+      messageTimestamps.delete(userId);
+      return true;
     }
-    
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload)
-        });
-        
-        return await response.json();
-    } catch (error) {
-        console.error('Error editing message caption:', error);
-        return null;
-    }
+    return false;
+  } catch (e) {
+    console.error('checkAntiSpam error', e);
+    return false;
+  }
 }
 
-// Answer callback query
-async function answerCallbackQuery(botToken, callbackQueryId, text = null, showAlert = false) {
-    const url = `https://api.telegram.org/bot${botToken}/answerCallbackQuery`;
-    
-    const payload = {
-        callback_query_id: callbackQueryId
-    };
-    
-    if (text) {
-        payload.text = text;
-        payload.show_alert = showAlert;
-    }
-    
-    try {
-        const response = await fetch(url, {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify(payload)
-        });
-        
-        return await response.json();
-    } catch (error) {
-        console.error('Error answering callback query:', error);
-        return null;
-    }
+// -----------------------------
+// Bot message templates (modern & simple)
+// -----------------------------
+function adminMenuTemplate(totalUsers = 0) {
+  return `
+👑 <b>NEXUS — Admin Console</b>
+━━━━━━━━━━━━━━━━━━
+👥 Members: <code>${totalUsers}</code>
+
+Pilih tindakan di bawah (sentuh tombol):
+`;
+}
+function prettyUserHeader(user) {
+  return `👋 <b>Halo, ${user.username ? '@' + user.username : 'User'}</b>\nID: <code>${user.id}</code>\n━━━━━━━━━━━━━━━━━━\n`;
 }
 
-// Handle command /start
+// -----------------------------
+// Existing user flows (start, id, buy, deposit) adapted and preserved
+// -----------------------------
 async function handleStart(update, env) {
-    const user = update.message.from;
-    const userId = user.id.toString();
-    const username = user.username || "Tidak Ada";
-    
-    const users = await loadDB(env.BOT_DB, 'users');
-    const accounts = await loadDB(env.BOT_DB, 'accounts');
-    
-    if (!users[userId]) {
-        users[userId] = { saldo: 0 };
-        await saveDB(env.BOT_DB, users, 'users');
-    }
-    
-    const saldo = users[userId].saldo;
-    const formattedSaldo = formatNumber(saldo);
-    const stok = Object.keys(accounts).length;
-    
-    // Ambil username admin dari environment
-    const adminUsername = env.ADMIN_USERNAME || "@admin";
-    
-    const message = `
-👋 <b>Selamat Datang Di Bot Order Otomatis</b>
+  const user = update.message.from;
+  const uid = user.id.toString();
+  if (await isBanned(env, uid)) {
+    const bans = await getBans(env);
+    const reason = bans[uid]?.reason || 'Anda diblokir.';
+    return await telegramSend(env.BOT_TOKEN, user.id, `❌ <b>Akses Ditolak</b>\n\nAnda telah diblokir.\nAlasan: ${reason}`);
+  }
 
-🆔 <b>User ID:</b> <code>${userId}</code>
-👤 <b>Username:</b> <code>@${username}</code>
+  const users = await loadDB(env.BOT_DB, 'users');
+  const accounts = await loadDB(env.BOT_DB, 'accounts');
 
-💰 <b>Saldo Anda:</b> <code>Rp ${formattedSaldo}</code>
-📦 <b>Stok Akun Tersedia:</b> <code>${stok}</code>
-
-👨‍💼 <b>Admin:</b> ${adminUsername}
-
-⚙️ <b>Gunakan menu di bawah ini untuk melanjutkan pembelian atau deposit.</b>
-    `;
-    
-    const keyboard = {
-        inline_keyboard: [
-            [{ text: "🛒 Beli Akun", callback_data: "beli_akun" }],
-            [{ text: "💳 Deposit Saldo", callback_data: "deposit" }]
-        ]
-    };
-    
-    return await sendTelegramMessage(env.BOT_TOKEN, user.id, message, keyboard);
-}
-
-// Handle command /id
-async function handleGetId(update, env) {
-    const user = update.message.from;
-    const userId = user.id;
-    const username = user.username;
-    
-    let message;
-    if (username) {
-        message = `
-🆔 <b>Informasi Akun Anda:</b>
-📄 <b>ID Pengguna:</b> <code>${userId}</code>
-👤 <b>Username:</b> <code>@${username}</code>
-
-Terima kasih telah menggunakan bot ini! 😊
-        `;
-    } else {
-        message = `
-🆔 <b>Informasi Akun Anda:</b>
-📄 <b>ID Pengguna:</b> <code>${userId}</code>
-👤 <b>Username:</b> <i>(not found)</i>
-
-Terima kasih telah menggunakan bot ini! 😊
-        `;
-    }
-    
-    return await sendTelegramMessage(env.BOT_TOKEN, userId, message);
-}
-
-// Handle callback beli akun
-async function handleBeliAkunCallback(update, env) {
-    const callbackQuery = update.callback_query;
-    const user = callbackQuery.from;
-    
-    const accounts = await loadDB(env.BOT_DB, 'accounts');
-    
-    if (Object.keys(accounts).length === 0) {
-        const message = `
-⚠️ <b>Maaf, saat ini item tidak tersedia.</b>  
-Silakan cek kembali nanti! 🙏
-        `;
-        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
-    }
-    
-    const groupedAccounts = {};
-    for (const [email, akun] of Object.entries(accounts)) {
-        const key = `${akun.name}_${akun.price}`;
-        if (!groupedAccounts[key]) {
-            groupedAccounts[key] = [];
-        }
-        groupedAccounts[key].push(email);
-    }
-    
-    const keyboard = {
-        inline_keyboard: [
-            ...Object.entries(groupedAccounts).map(([key, emails]) => {
-                const [name, price] = key.split('_');
-                const count = emails.length;
-                const formattedPrice = formatNumber(parseInt(price));
-                return [{
-                    text: `${name} - Rp ${formattedPrice} (x${count})`,
-                    callback_data: `group_${name}_${price}`
-                }];
-            }),
-            [{ text: "🔙 Kembali", callback_data: "back_to_main" }] // Tombol kembali
-        ]
-    };
-    
-    const message = `
-🛒 <b>Silakan pilih produk yang tersedia di bawah ini:</b>
-
-📋 <b>Total akun tersedia:</b> <code>${Object.keys(accounts).length}</code>
-
-Klik tombol di bawah untuk melihat detail atau memesan akun.
-    `;
-    
-    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-    return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, keyboard);
-}
-
-// Handle detail akun
-async function handleDetailAkun(update, env) {
-    const callbackQuery = update.callback_query;
-    const user = callbackQuery.from;
-    const callbackData = callbackQuery.data;
-    
-    const accounts = await loadDB(env.BOT_DB, 'accounts');
-    
-    const [, name, price] = callbackData.split('_');
-    const priceInt = parseInt(price);
-    
-    const filteredAccounts = Object.entries(accounts).filter(([email, akun]) => 
-        akun.name === name && akun.price === priceInt
-    );
-    
-    if (filteredAccounts.length === 0) {
-        const message = `
-❌ <b>Akun yang dipilih tidak tersedia.</b>  
-Silakan pilih akun lain dari daftar yang tersedia.
-        `;
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
-    }
-    
-    const randomIndex = Math.floor(Math.random() * filteredAccounts.length);
-    const [email, akun] = filteredAccounts[randomIndex];
-    const formattedPrice = formatNumber(akun.price);
-    
-    const message = `
-<b>Detail Produk</b>
-
-<b>Nama:</b> <code>${akun.name}</code>
-<b>Harga:</b> <code>Rp ${formattedPrice}</code>
-<b>Deskripsi Produk:</b>  
-${akun.description}
-
-❓ <b>Apakah Anda ingin membeli produk ini?</b>
-    `;
-    
-    const keyboard = {
-        inline_keyboard: [
-            [
-                { text: "✅ Iya", callback_data: `beli_${email}` },
-                { text: "❌ Tidak", callback_data: "beli_akun" }
-            ]
-        ]
-    };
-    
-    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-    return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, keyboard);
-}
-
-// Handle kembali ke menu utama
-async function handleBackToMain(update, env) {
-    const callbackQuery = update.callback_query;
-    const user = callbackQuery.from;
-    const userId = user.id.toString();
-    const username = user.username || "Tidak Ada";
-    
-    const users = await loadDB(env.BOT_DB, 'users');
-    const accounts = await loadDB(env.BOT_DB, 'accounts');
-    
-    const saldo = users[userId].saldo;
-    const formattedSaldo = formatNumber(saldo);
-    const stok = Object.keys(accounts).length;
-    
-    // Ambil username admin dari environment
-    const adminUsername = env.ADMIN_USERNAME || "@admin";
-    
-    const message = `
-👋 <b>Selamat Datang Di Bot Order Otomatis</b>
-
-🆔 <b>User ID:</b> <code>${userId}</code>
-👤 <b>Username:</b> <code>@${username}</code>
-
-💰 <b>Saldo Anda:</b> <code>Rp ${formattedSaldo}</code>
-📦 <b>Stok Akun Tersedia:</b> <code>${stok}</code>
-
-👨‍💼 <b>Admin:</b> ${adminUsername}
-
-⚙️ <b>Gunakan menu di bawah ini untuk melanjutkan pembelian atau deposit.</b>
-    `;
-    
-    const keyboard = {
-        inline_keyboard: [
-            [{ text: "🛒 Beli Akun", callback_data: "beli_akun" }],
-            [{ text: "💳 Deposit Saldo", callback_data: "deposit" }]
-        ]
-    };
-    
-    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-    return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message, keyboard);
-}
-
-// Handle proses pembelian
-async function handleProsesPembelian(update, env) {
-    const callbackQuery = update.callback_query;
-    const user = callbackQuery.from;
-    const userId = user.id.toString();
-    const callbackData = callbackQuery.data;
-    
-    const users = await loadDB(env.BOT_DB, 'users');
-    const accounts = await loadDB(env.BOT_DB, 'accounts');
-    
-    const email = callbackData.split('_')[1];
-    
-    if (!accounts[email]) {
-        const message = "<b>⚠️ Akun yang dipilih tidak tersedia.</b>";
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
-    }
-    
-    const akun = accounts[email];
-    const harga = akun.price;
-    
-    if (!users[userId]) {
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "⚠️ Anda belum terdaftar!", true);
-        return;
-    }
-    
-    const saldo = users[userId].saldo;
-    if (saldo < harga) {
-        const message = `
-<b>💰 Saldo Anda tidak cukup untuk pembelian ini.</b>
-Silakan top-up terlebih dahulu.
-        `;
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-        return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
-    }
-    
-    // Proses pembelian
-    users[userId].saldo -= harga;
+  if (!users[uid]) {
+    users[uid] = { saldo: 0 };
     await saveDB(env.BOT_DB, users, 'users');
-    
-    delete accounts[email];
-    await saveDB(env.BOT_DB, accounts, 'accounts');
-    
-    const formattedPrice = formatNumber(akun.price);
-    const currentSaldo = users[userId].saldo;
-    const formattedSaldo = formatNumber(currentSaldo);
-    
-    const akunStr = `
-<b>Pembelian Berhasil!</b>
+  }
 
-<b>Nama Produk:</b> <code>${akun.name}</code>
-<b>Email/Username:</b> <code>${akun.email}</code>
-<b>Password:</b> <code>${akun.password}</code>
-<b>Total yang Dibayar:</b> <code>Rp ${formattedPrice}</code>
-<b>Catatan Produk:</b>
-${akun.note || 'Tidak ada catatan'}
+  const saldo = users[uid].saldo || 0;
+  const stok = Object.keys(accounts).length;
+  const msg = `
+${prettyUserHeader(user)}
+💰 <b>Saldo:</b> <code>Rp ${formatNumber(saldo)}</code>
+📦 <b>Stok Akun:</b> <code>${stok}</code>
 
-<b>Saldo Anda Saat Ini:</b> <code>Rp ${formattedSaldo}</code>
-    `;
-    
-    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-    await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, akunStr);
-    
-    // Kirim notifikasi ke admin
-    const username = user.username || "null";
-    const adminMessage = `
-<b>Notifikasi Pembelian</b>
+Gunakan menu di bawah untuk membeli atau deposit.
+`;
 
-<b>Username:</b> <code>@${username}</code>
-<b>User ID:</b> <code>${userId}</code>
-<b>Nama Produk:</b> <code>${akun.name}</code>
-<b>Email/Username:</b> <code>${akun.email}</code>
-<b>Password:</b> <code>${akun.password}</code>
-<b>Harga:</b> <code>Rp ${formattedPrice}</code>
-<b>Catatan Produk:</b>
-${akun.note || 'Tidak ada catatan'}
+  const keyboard = {
+    inline_keyboard: [
+      [{ text: "🛒 Beli Akun", callback_data: "beli_akun" }],
+      [{ text: "💳 Deposit Saldo", callback_data: "deposit" }]
+    ]
+  };
 
-<b>Saldo Setelah Pembelian:</b> <code>Rp ${formattedSaldo}</code>
-    `;
-    
-    await sendTelegramMessage(env.BOT_TOKEN, env.ADMIN_ID, adminMessage);
+  return await telegramSend(env.BOT_TOKEN, user.id, msg, keyboard);
 }
 
-// Handle deposit callback
+async function handleGetId(update, env) {
+  const u = update.message.from;
+  const msg = `
+🆔 <b>Informasi Akun</b>
+👤 Username: ${u.username ? `<code>@${u.username}</code>` : '<i>(tidak tersedia)</i>'}
+📄 User ID: <code>${u.id}</code>
+`;
+  return await telegramSend(env.BOT_TOKEN, u.id, msg);
+}
+
+// BUY FLOW (kept behavior)
+async function handleBeliAkunCallback(update, env) {
+  const callbackQuery = update.callback_query;
+  const user = callbackQuery.from;
+  if (await isBanned(env, user.id.toString())) {
+    await answerCallback(env.BOT_TOKEN, callbackQuery.id, '❌ Anda diblokir.', true);
+    return;
+  }
+  const accounts = await loadDB(env.BOT_DB, 'accounts');
+  if (Object.keys(accounts).length === 0) {
+    const msg = `⚠️ <b>Maaf, saat ini item tidak tersedia.</b>`;
+    return await telegramEditText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, msg);
+  }
+  const grouped = {};
+  for (const [email, acc] of Object.entries(accounts)) {
+    const key = `${acc.name}_${acc.price}`;
+    (grouped[key] = grouped[key] || []).push(email);
+  }
+  const buttons = Object.entries(grouped).map(([key, emails]) => {
+    const [name, price] = key.split('_');
+    const count = emails.length;
+    return [{ text: `${name} - Rp ${formatNumber(parseInt(price))} (x${count})`, callback_data: `group_${name}_${price}` }];
+  });
+  buttons.push([{ text: "🔙 Kembali", callback_data: "back_to_main" }]);
+  const msg = `<b>🛒 Pilih Produk</b>\nTotal stok: <code>${Object.keys(accounts).length}</code>`;
+  await answerCallback(env.BOT_TOKEN, callbackQuery.id);
+  return await telegramEditText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, msg, { inline_keyboard: buttons });
+}
+
+async function handleDetailAkun(update, env) {
+  const callbackQuery = update.callback_query;
+  const user = callbackQuery.from;
+  if (await isBanned(env, user.id.toString())) {
+    await answerCallback(env.BOT_TOKEN, callbackQuery.id, '❌ Anda diblokir.', true);
+    return;
+  }
+  const accounts = await loadDB(env.BOT_DB, 'accounts');
+  const [, name, price] = callbackQuery.data.split('_');
+  const priceInt = parseInt(price);
+  const filtered = Object.entries(accounts).filter(([email, acc]) => acc.name === name && acc.price === priceInt);
+  if (filtered.length === 0) {
+    await answerCallback(env.BOT_TOKEN, callbackQuery.id);
+    return await telegramEditText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, '❌ <b>Akun tidak tersedia</b>');
+  }
+  const [email, acc] = filtered[Math.floor(Math.random() * filtered.length)];
+  const msg = `
+<b>Detail Produk</b>
+<b>Nama:</b> <code>${acc.name}</code>
+<b>Harga:</b> <code>Rp ${formatNumber(acc.price)}</code>
+<b>Deskripsi:</b>
+${acc.description || 'Tidak ada deskripsi'}
+`;
+  const keyboard = { inline_keyboard: [[{ text: "✅ Beli", callback_data: `beli_${email}` }, { text: "❌ Batal", callback_data: "beli_akun" }]] };
+  await answerCallback(env.BOT_TOKEN, callbackQuery.id);
+  return await telegramEditText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, msg, keyboard);
+}
+
+async function handleProsesPembelian(update, env) {
+  const callbackQuery = update.callback_query;
+  const user = callbackQuery.from;
+  if (await isBanned(env, user.id.toString())) {
+    await answerCallback(env.BOT_TOKEN, callbackQuery.id, '❌ Anda diblokir.', true);
+    return;
+  }
+  const uid = user.id.toString();
+  const users = await loadDB(env.BOT_DB, 'users');
+  const accounts = await loadDB(env.BOT_DB, 'accounts');
+  const email = callbackQuery.data.split('_')[1];
+  if (!accounts[email]) {
+    await answerCallback(env.BOT_TOKEN, callbackQuery.id);
+    return await telegramEditText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, '<b>⚠️ Akun tidak tersedia.</b>');
+  }
+  const acc = accounts[email];
+  const price = acc.price;
+  if (!users[uid]) users[uid] = { saldo: 0 };
+  if (users[uid].saldo < price) {
+    await answerCallback(env.BOT_TOKEN, callbackQuery.id);
+    return await telegramEditText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, '<b>💰 Saldo tidak cukup. Silakan deposit.</b>');
+  }
+  users[uid].saldo -= price;
+  await saveDB(env.BOT_DB, users, 'users');
+  delete accounts[email];
+  await saveDB(env.BOT_DB, accounts, 'accounts');
+  const msg = `
+✅ <b>Pembelian Berhasil</b>
+<b>Produk:</b> <code>${acc.name}</code>
+<b>Email:</b> <code>${acc.email}</code>
+<b>Password:</b> <code>${acc.password}</code>
+<b>Total Bayar:</b> <code>Rp ${formatNumber(price)}</code>
+`;
+  await answerCallback(env.BOT_TOKEN, callbackQuery.id);
+  await telegramEditText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, msg);
+
+  // notify admin and log group (quoted)
+  await telegramSend(env.BOT_TOKEN, env.ADMIN_ID, `<b>🔔 Pembelian Sukses</b>\n> 👤 User: @${user.username || 'N/A'} (ID: ${uid})\n> 🛒 Produk: ${acc.name}\n> 💰 Harga: Rp ${formatNumber(price)}\n> 🕒 ${niceTime(new Date())}`);
+  await sendLog(env, '📦 Transaksi Sukses', [
+    `👤 User: @${user.username || 'N/A'} (ID: ${uid})`,
+    `Jenis: Pembelian`,
+    `Produk: ${acc.name}`,
+    `Harga: Rp ${formatNumber(price)}`,
+    `Waktu: ${niceTime(new Date())}`
+  ]);
+}
+
+// -----------------------------
+// Deposit flow (preserve original logic + bonus calculation)
+// -----------------------------
 async function handleDepositCallback(update, env) {
-    const callbackQuery = update.callback_query;
-    const user = callbackQuery.from;
-    
-    // Cek apakah ada deposit pending di database
-    const pendingPayment = await getPendingPayment(env.BOT_DB, user.id);
-    if (pendingPayment) {
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "⚠️ Anda masih memiliki deposit yang belum selesai. Silakan selesaikan atau batalkan deposit sebelumnya.", true);
-        return;
-    }
-    
-    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-    
-    const minAmount = parseInt(env.MIN_AMOUNT) || 1000;
-    const formattedMinAmount = formatNumber(minAmount);
-    
-    const message = `
-<b>Masukkan nominal deposit</b>
-
-💰 <b>Minimal deposit:</b> <code>Rp ${formattedMinAmount}</code>
-
-Silakan ketik jumlah saldo yang ingin Anda deposit:
-    `;
-    
-    return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
+  const callbackQuery = update.callback_query;
+  const user = callbackQuery.from;
+  if (await isBanned(env, user.id.toString())) {
+    await answerCallback(env.BOT_TOKEN, callbackQuery.id, '❌ Anda diblokir dan tidak dapat deposit.', true);
+    return;
+  }
+  const pending = await getPendingPayment(env.BOT_DB, user.id);
+  if (pending) {
+    await answerCallback(env.BOT_TOKEN, callbackQuery.id, '⚠️ Anda masih punya deposit pending.', true);
+    return;
+  }
+  await answerCallback(env.BOT_TOKEN, callbackQuery.id);
+  const minAmount = parseInt(env.MIN_AMOUNT) || 1000;
+  const msg = `<b>Masukkan nominal deposit</b>\n💰 Minimal: <code>Rp ${formatNumber(minAmount)}</code>\nKetik jumlah:`;
+  return await telegramEditText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, msg);
 }
 
-// Handle message deposit
 async function handleDepositMessage(update, env) {
-    const message = update.message;
-    const user = message.from;
-    const text = message.text;
-    
-    // Cek apakah ada deposit pending di database
-    const pendingPayment = await getPendingPayment(env.BOT_DB, user.id);
-    if (pendingPayment) {
-        const responseMessage = `
-⚠️ <b>Anda masih memiliki deposit yang belum selesai.</b>
-
-Silakan selesaikan atau batalkan deposit sebelumnya sebelum melakukan deposit baru.
-        `;
-        return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
+  const message = update.message;
+  const user = message.from;
+  if (await isBanned(env, user.id.toString())) {
+    await telegramSend(env.BOT_TOKEN, user.id, '❌ Anda diblokir dan tidak dapat deposit.');
+    return;
+  }
+  const pending = await getPendingPayment(env.BOT_DB, user.id);
+  if (pending) {
+    await telegramSend(env.BOT_TOKEN, user.id, '⚠️ Anda masih memiliki deposit yang belum selesai.');
+    return;
+  }
+  try {
+    const nominal = parseInt(message.text.replace(/\D/g, ''));
+    const minAmount = parseInt(env.MIN_AMOUNT) || 1000;
+    if (isNaN(nominal) || nominal < minAmount) {
+      return await telegramSend(env.BOT_TOKEN, user.id, `⚠️ Nominal minimal Rp ${formatNumber(minAmount)}.`);
     }
-    
-    try {
-        const nominal = parseInt(text);
-        const minAmount = parseInt(env.MIN_AMOUNT) || 1000;
-        
-        if (isNaN(nominal) || nominal <= 0) {
-            throw new Error("Nominal tidak valid");
-        }
-        
-        if (nominal < minAmount) {
-            const formattedMinAmount = formatNumber(minAmount);
-            const responseMessage = `⚠️ <b>Nominal deposit minimal Rp ${formattedMinAmount}.</b>`;
-            return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
-        }
-        
-        // Buat QRIS dan konfirmasi
-        await createQrisAndConfirm(env, user, nominal);
-        
-    } catch (error) {
-        const responseMessage = "⚠️ <b>Nominal tidak valid. Harap masukkan angka.</b>";
-        return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
-    }
+    await createQrisAndConfirm(env, user, nominal);
+  } catch (e) {
+    await telegramSend(env.BOT_TOKEN, user.id, '⚠️ Nominal tidak valid.');
+  }
 }
 
-// Buat QRIS dan konfirmasi
 async function createQrisAndConfirm(env, user, nominal) {
-    // Gunakan fungsi getRandomAmount yang baru dengan konfigurasi dari env
-    const randomAddition = getRandomAmount(env);
-    const finalNominal = nominal + randomAddition;
-    
-    try {
-        const response = await fetch(`${env.API_CREATE_URL}?amount=${finalNominal}&qrisCode=${env.QRIS_CODE}`);
-        const data = await response.json();
-        
-        if (data.status === "success") {
-            const qrisUrl = data.data.download_url;
-            const transactionId = data.data["kode transaksi"];
-            
-            // Simpan data pembayaran pending ke database
-            const paymentData = {
-                nominal: nominal,
-                finalNominal: finalNominal,
-                transactionId: transactionId,
-                timestamp: new Date(),
-                status: "pending",
-                messageId: null // akan diisi setelah mengirim pesan
-            };
-            
-            await savePendingPayment(env.BOT_DB, user.id, paymentData);
-            
-            const formattedNominal = formatNumber(nominal);
-            const formattedFinal = formatNumber(finalNominal);
-            
-            const keyboard = {
-                inline_keyboard: [
-                    [
-                        { text: "✅ Konfirmasi Pembayaran", callback_data: `confirm_payment_${transactionId}` },
-                        { text: "❌ Batalkan Pembayaran", callback_data: "cancel_payment" }
-                    ]
-                ]
-            };
-            
-            const caption = `
-<b>Top Up Pending</b>
-
-🆔 <b>ID Transaksi:</b> <code>${transactionId}</code>
-💰 <b>Nominal:</b> <code>Rp ${formattedNominal}</code>
-📊 <b>Fee Random:</b> <code>Rp ${randomAddition}</code>
-💳 <b>Total:</b> <code>Rp ${formattedFinal}</code>
-⏰ <b>Expired:</b> <code>10 minutes</code>
-
-<b>Scan QRIS di atas untuk melakukan pembayaran.</b>
-
-✅ <i>Setelah melakukan pembayaran, klik tombol "Konfirmasi Pembayaran" di bawah</i>
-❌ <i>Jika ingin membatalkan, klik "Batalkan Pembayaran"</i>
-            `;
-            
-            // Kirim photo QRIS dan simpan message ID
-            const sentMessage = await sendTelegramPhoto(env.BOT_TOKEN, user.id, qrisUrl, caption, keyboard);
-            if (sentMessage && sentMessage.ok) {
-                // Update payment data dengan message ID
-                paymentData.messageId = sentMessage.result.message_id;
-                await savePendingPayment(env.BOT_DB, user.id, paymentData);
-            }
-            
-            // Kirim notifikasi ke admin
-            const adminMessage = `
-<b>Pembayaran Pending</b>
-<b>Username:</b> <code>@${user.username || 'N/A'}</code>
-<b>User ID:</b> <code>${user.id}</code>
-<b>Id Transaksi:</b> <code>${transactionId}</code>
-<b>Nominal:</b> <code>${nominal}</code>
-<b>Fee Random:</b> <code>${randomAddition}</code>
-<b>Total Bayar:</b> <code>${finalNominal}</code>
-            `;
-            
-            await sendTelegramMessage(env.BOT_TOKEN, env.ADMIN_ID, adminMessage);
-        } else {
-            await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>Gagal membuat QRIS. Silakan coba lagi.</b>");
-        }
-    } catch (error) {
-        console.error('Error creating QRIS:', error);
-        await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>Terjadi kesalahan saat membuat QRIS. Silakan coba lagi.</b>");
+  const randomFee = getRandomAmount(env);
+  const finalTotal = nominal + randomFee;
+  try {
+    const response = await fetch(`${env.API_CREATE_URL}?amount=${finalTotal}&qrisCode=${env.QRIS_CODE}`);
+    const data = await response.json();
+    if (!data || data.status !== 'success') {
+      return await telegramSend(env.BOT_TOKEN, user.id, '❌ Gagal membuat QRIS. Coba lagi.');
     }
-}
-
-// Handle konfirmasi pembayaran
-async function handleConfirmPayment(update, env) {
-    const callbackQuery = update.callback_query;
-    const user = callbackQuery.from;
-    const userId = user.id;
-    const callbackData = callbackQuery.data;
-    
-    // Cek apakah ada pembayaran pending di database
-    const paymentData = await getPendingPayment(env.BOT_DB, userId);
-    if (!paymentData) {
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Tidak ada deposit yang pending. Silakan mulai deposit baru.", true);
-        return;
-    }
-    
-    const transactionId = callbackData.split('_')[2];
-    
-    // Pastikan transaction_id sesuai
-    if (paymentData.transactionId !== transactionId) {
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ ID transaksi tidak sesuai.", true);
-        return;
-    }
-    
-    // Cek apakah pembayaran sudah expired
-    const now = new Date();
-    const paymentTime = new Date(paymentData.timestamp);
-    const diffMinutes = (now - paymentTime) / (1000 * 60);
-    
-    if (diffMinutes > 10) {
-        await removePendingPayment(env.BOT_DB, userId);
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Pembayaran telah expired. Silakan buat deposit baru.", true);
-        
-        // Update pesan
-        const expiredCaption = `
-❌ <b>Pembayaran Expired</b>
-
-🆔 <b>ID Transaksi:</b> <code>${transactionId}</code>
-
-Pembayaran telah expired. Silakan buat deposit baru.
-        `;
-        
-        if (paymentData.messageId) {
-            await editMessageCaption(env.BOT_TOKEN, user.id, paymentData.messageId, expiredCaption);
-        }
-        return;
-    }
-    
-    // Cek pembayaran via API
-    try {
-        const response = await fetch(`${env.API_CHECK_PAYMENT}?merchant=${env.MERCHANT_ID}&key=${env.API_KEY}`);
-        if (response.ok) {
-            const data = await response.json();
-            
-            if (data.status === "success") {
-                const payments = data.data || [];
-                let paymentFound = false;
-                
-                for (const payment of payments) {
-                    if (payment && typeof payment === 'object' && payment.amount === paymentData.finalNominal) {
-                        paymentFound = true;
-                        break;
-                    }
-                }
-                
-                if (paymentFound) {
-                    // Pembayaran ditemukan, tambahkan saldo
-                    const users = await loadDB(env.BOT_DB, 'users');
-                    const userIdStr = userId.toString();
-                    
-                    if (!users[userIdStr]) {
-                        users[userIdStr] = { saldo: 0 };
-                    }
-                    
-                    users[userIdStr].saldo += paymentData.nominal;
-                    await saveDB(env.BOT_DB, users, 'users');
-                    
-                    const formattedNominal = formatNumber(paymentData.nominal);
-                    const formattedSaldo = formatNumber(users[userIdStr].saldo);
-                    
-                    // Hapus dari pending payments di database
-                    await removePendingPayment(env.BOT_DB, userId);
-                    
-                    // Edit pesan asli
-                    const newCaption = `
-✅ <b>Pembayaran Berhasil Dikonfirmasi!</b>
-
-🆔 <b>ID Transaksi:</b> <code>${transactionId}</code>
-💰 <b>Nominal:</b> <code>Rp ${formattedNominal}</code>
-💳 <b>Saldo Anda Sekarang:</b> <code>Rp ${formattedSaldo}</code>
-
-Terima kasih telah melakukan top-up! 😊
-                    `;
-                    
-                    if (paymentData.messageId) {
-                        await editMessageCaption(
-                            env.BOT_TOKEN,
-                            user.id,
-                            paymentData.messageId,
-                            newCaption
-                        );
-                    }
-                    
-                    // Kirim notifikasi ke admin
-                    const adminMessage = `
-<b>Pembayaran Dikonfirmasi</b>
-<b>Username:</b> <code>@${user.username || 'null'}</code>
-<b>User ID:</b> <code>${userId}</code>
-<b>Id Transaksi:</b> <code>${transactionId}</code>
-<b>Nominal:</b> <code>${paymentData.nominal}</code>
-<b>Saldo Baru:</b> <code>${users[userIdStr].saldo}</code>
-                    `;
-                    
-                    await sendTelegramMessage(env.BOT_TOKEN, env.ADMIN_ID, adminMessage);
-                    
-                    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "✅ Pembayaran berhasil dikonfirmasi! Saldo telah ditambahkan.", true);
-                } else {
-                    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "⚠️ Pembayaran belum terdeteksi. Silakan tunggu beberapa menit atau hubungi admin jika sudah melakukan pembayaran.", true);
-                }
-            } else {
-                await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Gagal memeriksa pembayaran. Silakan coba lagi.", true);
-            }
-        } else {
-            await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Gagal terhubung ke sistem pembayaran. Silakan coba lagi.", true);
-        }
-    } catch (error) {
-        console.error('Error checking payment:', error);
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, `❌ Terjadi kesalahan: ${error.message}`, true);
-    }
-}
-
-// Handle batalkan pembayaran
-async function handleCancelPayment(update, env) {
-    const callbackQuery = update.callback_query;
-    const user = callbackQuery.from;
-    const userId = user.id;
-    
-    // Cek apakah ada pembayaran pending di database
-    const paymentData = await getPendingPayment(env.BOT_DB, userId);
-    if (!paymentData) {
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Tidak ada deposit yang pending.", true);
-        return;
-    }
-    
-    // Hapus dari pending payments di database
-    const transactionId = paymentData.transactionId;
-    await removePendingPayment(env.BOT_DB, userId);
-    
-    // Edit pesan asli
-    const newCaption = `
-❌ <b>Pembayaran Dibatalkan</b>
-
-🆔 <b>ID Transaksi:</b> <code>${transactionId}</code>
-
-Pembayaran telah dibatalkan. Anda dapat melakukan deposit kembali kapan saja.
-    `;
-    
-    if (paymentData.messageId) {
-        await editMessageCaption(
-            env.BOT_TOKEN,
-            user.id,
-            paymentData.messageId,
-            newCaption
-        );
-    }
-    
-    // Kirim notifikasi ke admin
-    const adminMessage = `
-<b>Pembayaran Dibatalkan</b>
-<b>Username:</b> <code>@${user.username || 'null'}</code>
-<b>User ID:</b> <code>${userId}</code>
-<b>Id Transaksi:</b> <code>${transactionId}</code>
-    `;
-    
-    await sendTelegramMessage(env.BOT_TOKEN, env.ADMIN_ID, adminMessage);
-    
-    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Pembayaran telah dibatalkan.", true);
-}
-
-// Handle admin command
-async function handleAdmin(update, env) {
-    const message = update.message;
-    const user = message.from;
-    
-    if (user.id.toString() !== env.ADMIN_ID) {
-        const responseMessage = `
-❌ <b>Akses ditolak!</b>
-
-Hanya admin yang dapat menggunakan perintah ini.
-        `;
-        return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
-    }
-    
-    const users = await loadDB(env.BOT_DB, 'users');
-    const totalMembers = Object.keys(users).length;
-    
-    const keyboard = {
-        inline_keyboard: [
-            [
-                { text: "➕ Tambah Saldo", callback_data: "admin_tambah_saldo" },
-                { text: "➖ Kurangi Saldo", callback_data: "admin_kurangi_saldo" }
-            ],
-            [
-                { text: "🛒 Tambah Akun", callback_data: "admin_tambah_akun" },
-                { text: "🗑️ Hapus Akun", callback_data: "admin_hapus_akun" }
-            ],
-            [
-                { text: "👥 Cek Member", callback_data: "admin_cek_member" }
-            ],
-            [
-                { text: "📢 Broadcast", callback_data: "admin_broadcast" }
-            ],
-            [
-                { text: "⏰ Cek Pending Payments", callback_data: "admin_cek_pending" }
-            ]
-        ]
+    const qrisUrl = data.data.download_url;
+    const transId = data.data['kode transaksi'] || (`TX${Date.now()}`);
+    const paymentData = {
+      nominal,
+      finalNominal: finalTotal,
+      transactionId: transId,
+      timestamp: new Date(),
+      status: 'pending',
+      messageId: null
     };
-    
-    const adminMessage = `
-👮 <b>Admin Menu</b>
+    await savePendingPayment(env.BOT_DB, user.id, paymentData);
+    const caption = `
+<b>🔖 Top Up Pending</b>
 
-👥 <b>Total Member:</b> <code>${totalMembers}</code>
+🆔 ID Transaksi: <code>${transId}</code>
+💰 Nominal: <code>Rp ${formatNumber(nominal)}</code>
+📊 Fee Random: <code>Rp ${formatNumber(randomFee)}</code>
+💳 Total Bayar: <code>Rp ${formatNumber(finalTotal)}</code>
+⏰ Expired: <code>10 minutes</code>
 
-Silakan pilih aksi yang ingin dilakukan dengan menekan tombol di bawah ini:
-    `;
-    
-    return await sendTelegramMessage(env.BOT_TOKEN, user.id, adminMessage, keyboard);
+Scan QRIS & konfirmasi setelah bayar.
+`;
+    const keyboard = { inline_keyboard: [[{ text: "✅ Konfirmasi Pembayaran", callback_data: `confirm_payment_${transId}` }, { text: "❌ Batalkan Pembayaran", callback_data: "cancel_payment" }]] };
+    const sent = await telegramSendPhoto(env.BOT_TOKEN, user.id, qrisUrl, caption, keyboard);
+    if (sent && sent.ok) {
+      paymentData.messageId = sent.result.message_id;
+      await savePendingPayment(env.BOT_DB, user.id, paymentData);
+    }
+    // notify admin & log
+    await telegramSend(env.BOT_TOKEN, env.ADMIN_ID, `<b>🔔 Pembayaran Pending</b>\n> 👤 User: @${user.username || 'N/A'} (ID: ${user.id})\n> ID Trans: ${transId}\n> Total: Rp ${formatNumber(finalTotal)}`);
+    await sendLog(env, '⏳ Pending Payment', [
+      `👤 User: @${user.username || 'N/A'} (ID: ${user.id})`,
+      `ID Trans: ${transId}`,
+      `Total Bayar: Rp ${formatNumber(finalTotal)}`,
+      `Waktu: ${niceTime(new Date())}`
+    ]);
+  } catch (e) {
+    console.error('createQrisAndConfirm error', e);
+    await telegramSend(env.BOT_TOKEN, user.id, '❌ Terjadi kesalahan membuat QRIS.');
+  }
 }
 
-// Handle admin actions callback
-async function handleAdminActions(update, env) {
-    const callbackQuery = update.callback_query;
-    const user = callbackQuery.from;
-    const callbackData = callbackQuery.data;
-    
-    if (user.id.toString() !== env.ADMIN_ID) {
-        await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id, "❌ Akses ditolak!", true);
-        return;
+async function handleConfirmPayment(update, env) {
+  const cb = update.callback_query;
+  const user = cb.from;
+  if (await isBanned(env, user.id.toString())) {
+    await answerCallback(env.BOT_TOKEN, cb.id, '❌ Anda diblokir.', true);
+    return;
+  }
+  const p = await getPendingPayment(env.BOT_DB, user.id);
+  if (!p) {
+    await answerCallback(env.BOT_TOKEN, cb.id, '❌ Tidak ada pembayaran pending.', true);
+    return;
+  }
+  const transId = cb.data.split('_')[2];
+  if (p.transactionId !== transId) {
+    await answerCallback(env.BOT_TOKEN, cb.id, '❌ ID transaksi tidak cocok.', true);
+    return;
+  }
+  // check expiration
+  const now = new Date();
+  const diffMinutes = (now - new Date(p.timestamp)) / (1000*60);
+  if (diffMinutes > 10) {
+    await removePendingPayment(env.BOT_DB, user.id);
+    if (p.messageId) await telegramEditCaption(env.BOT_TOKEN, user.id, p.messageId, `❌ <b>Pembayaran Expired</b>\nID: <code>${transId}</code>`);
+    await answerCallback(env.BOT_TOKEN, cb.id, '❌ Pembayaran expired.', true);
+    return;
+  }
+  // verify via API
+  try {
+    const response = await fetch(`${env.API_CHECK_PAYMENT}?merchant=${env.MERCHANT_ID}&key=${env.API_KEY}`);
+    if (!response.ok) {
+      await answerCallback(env.BOT_TOKEN, cb.id, '❌ Gagal cek pembayaran.', true);
+      return;
     }
-    
-    await answerCallbackQuery(env.BOT_TOKEN, callbackQuery.id);
-    
-    let message = "";
-    
-    switch (callbackData) {
-        case "admin_tambah_saldo":
-            message = `
-📝 <b>Tambah Saldo</b>
-
-Kirimkan ID user dan jumlah saldo yang ingin ditambahkan.
-<b>Format:</b> <code>id jumlah</code>
-
-Contoh:
-<code>12345 100</code>
-            `;
-            userSessions.set(user.id, { action: 'tambah_saldo' });
-            break;
-            
-        case "admin_kurangi_saldo":
-            message = `
-📝 <b>Kurangi Saldo</b>
-
-Kirimkan ID user dan jumlah saldo yang ingin dikurangi.
-<b>Format:</b> <code>id jumlah</code>
-
-Contoh:
-<code>12345 50</code>
-            `;
-            userSessions.set(user.id, { action: 'kurangi_saldo' });
-            break;
-            
-        case "admin_tambah_akun":
-            message = `
-🛒 <b>Tambah Akun Produk</b>
-
-Silakan masukkan <b>nama produk</b> untuk memulai.
-            `;
-            userSessions.set(user.id, { 
-                action: 'tambah_akun',
-                step: 'nama',
-                data: {}
-            });
-            break;
-            
-        case "admin_hapus_akun":
-            message = `
-🗑️ <b>Hapus Akun</b>
-
-Kirimkan <b>email akun</b> yang ingin dihapus.
-            `;
-            userSessions.set(user.id, { action: 'hapus_akun' });
-            break;
-            
-        case "admin_cek_member":
-            const users = await loadDB(env.BOT_DB, 'users');
-            const totalMember = Object.keys(users).length;
-            
-            if (totalMember === 0) {
-                message = "⚠️ <b>Tidak ada member yang terdaftar.</b>";
-            } else {
-                const maxIdLength = Math.max(...Object.keys(users).map(id => id.length));
-                const saldoInfo = Object.entries(users)
-                    .map(([userId, data]) => 
-                        `⤷ <code>${userId.padEnd(maxIdLength)}</code> ➠ <code>${data.saldo}</code>`
-                    )
-                    .join('\n');
-                
-                message = `
-👥 <b>Total Member:</b> <code>${totalMember}</code>
-
-💳 <b>Saldo Pengguna:</b>
-${saldoInfo}
-                `;
-            }
-            break;
-            
-        case "admin_broadcast":
-            message = `
-📢 <b>Broadcast Message</b>
-
-Balas pesan ini dengan perintah <code>/broadcast</code> untuk mengirim pesan ke semua user.
-
-Atau gunakan format:
-<code>/broadcast id1,id2,id3</code> untuk mengirim ke user tertentu.
-            `;
-            break;
-            
-        case "admin_cek_pending":
-            const pendingPayments = await loadPendingPayments(env.BOT_DB);
-            const pendingCount = Object.keys(pendingPayments).length;
-            
-            if (pendingCount === 0) {
-                message = "⚠️ <b>Tidak ada pending payments.</b>";
-            } else {
-                const now = new Date();
-                const pendingInfo = Object.entries(pendingPayments)
-                    .map(([userId, payment]) => {
-                        const paymentTime = new Date(payment.timestamp);
-                        const diffMinutes = Math.floor((now - paymentTime) / (1000 * 60));
-                        const remaining = 10 - diffMinutes;
-                        return `⤷ <code>${userId}</code> - <code>${payment.transactionId}</code> - Rp ${formatNumber(payment.nominal)} (${remaining}m left)`;
-                    })
-                    .join('\n');
-                
-                message = `
-⏰ <b>Pending Payments</b>
-
-📋 <b>Total:</b> <code>${pendingCount}</code>
-
-${pendingInfo}
-                `;
-            }
-            break;
+    const data = await response.json();
+    if (data.status !== 'success') {
+      await answerCallback(env.BOT_TOKEN, cb.id, '⚠️ Pembayaran belum terdeteksi.', true);
+      return;
     }
-    
-    return await editMessageText(env.BOT_TOKEN, user.id, callbackQuery.message.message_id, message);
-}
-
-// Handle admin message processing
-async function handleAdminMessage(update, env) {
-    const message = update.message;
-    const user = message.from;
-    const text = message.text;
-    
-    if (user.id.toString() !== env.ADMIN_ID) {
-        return;
+    const payments = data.data || [];
+    let found = false;
+    for (const pay of payments) {
+      if (pay && pay.amount === p.finalNominal) { found = true; break; }
     }
-    
-    const session = userSessions.get(user.id);
-    if (!session) {
-        return;
+    if (!found) {
+      await answerCallback(env.BOT_TOKEN, cb.id, '⚠️ Pembayaran belum terdeteksi.', true);
+      return;
     }
-    
+    // apply bonus
     const users = await loadDB(env.BOT_DB, 'users');
-    const accounts = await loadDB(env.BOT_DB, 'accounts');
-    
-    try {
-        switch (session.action) {
-            case 'tambah_saldo':
-            case 'kurangi_saldo':
-                const [targetId, amountStr] = text.split(' ');
-                const amount = parseInt(amountStr);
-                
-                if (!users[targetId]) {
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>User tidak ditemukan.</b>");
-                    userSessions.delete(user.id);
-                    return;
-                }
-                
-                if (session.action === 'tambah_saldo') {
-                    users[targetId].saldo += amount;
-                } else {
-                    users[targetId].saldo -= amount;
-                }
-                
-                await saveDB(env.BOT_DB, users, 'users');
-                
-                const formattedAmount = formatNumber(amount);
-                const formattedSaldo = formatNumber(users[targetId].saldo);
-                
-                const adminMsg = `
-✅ <b>Saldo berhasil diperbarui!</b>
-🆔 <b>User ID:</b> <code>${targetId}</code>
-🔹 ${session.action === 'tambah_saldo' ? 'Penambahan' : 'Pengurangan'}: <code>Rp ${formattedAmount}</code>
-💰 <b>Saldo saat ini:</b> <code>Rp ${formattedSaldo}</code>
-                `;
-                
-                const userMsg = `
-✅ <b>Saldo Anda telah diperbarui!</b>
-🔹 ${session.action === 'tambah_saldo' ? 'Penambahan' : 'Pengurangan'}: <code>Rp ${formattedAmount}</code>
-💰 <b>Saldo saat ini:</b> <code>Rp ${formattedSaldo}</code>
-                `;
-                
-                await sendTelegramMessage(env.BOT_TOKEN, user.id, adminMsg);
-                await sendTelegramMessage(env.BOT_TOKEN, parseInt(targetId), userMsg);
-                
-                userSessions.delete(user.id);
-                break;
-                
-            case 'tambah_akun':
-                const step = session.step;
-                const data = session.data;
-                
-                if (step === 'nama') {
-                    data.name = text;
-                    session.step = 'email';
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "<b>Masukkan username/email</b>");
-                } else if (step === 'email') {
-                    data.email = text;
-                    session.step = 'password';
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "<b>Masukkan password</b>");
-                } else if (step === 'password') {
-                    data.password = text;
-                    session.step = 'harga';
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "<b>Masukkan harga:</b>");
-                } else if (step === 'harga') {
-                    data.price = parseInt(text);
-                    if (isNaN(data.price)) {
-                        await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>Harga harus berupa angka. Masukkan harga</b>");
-                        return;
-                    }
-                    const formattedPrice = formatNumber(data.price);
-                    session.step = 'deskripsi';
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, `<b>Masukkan deskripsi akun</b>\n💰 Harga: <code>Rp ${formattedPrice}</code>`);
-                } else if (step === 'deskripsi') {
-                    data.description = text;
-                    session.step = 'catatan';
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "<b>Masukkan catatan akun (misal: detail login/2FA)</b>");
-                } else if (step === 'catatan') {
-                    data.note = text.toLowerCase() !== "tidak ada" ? text : "Tidak ada catatan";
-                    const formattedPrice = formatNumber(data.price);
-                    
-                    accounts[data.email] = data;
-                    await saveDB(env.BOT_DB, accounts, 'accounts');
-                    
-                    const addedAccountMsg = `
-<b>Akun berhasil ditambahkan:</b>
-<b>Nama:</b> <code>${data.name}</code>
-<b>Email:</b> <code>${data.email}</code>
-<b>Password:</b> <code>${data.password}</code>
-<b>Harga:</b> <code>Rp ${formattedPrice}</code>
-<b>Deskripsi:</b> ${data.description}
-<b>Catatan:</b> ${data.note}
-                    `;
-                    
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, addedAccountMsg);
-                    userSessions.delete(user.id);
-                }
-                break;
-                
-            case 'hapus_akun':
-                if (accounts[text]) {
-                    delete accounts[text];
-                    await saveDB(env.BOT_DB, accounts, 'accounts');
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "✅ <b>Akun berhasil dihapus.</b>");
-                } else {
-                    await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>Akun tidak ditemukan.</b>");
-                }
-                userSessions.delete(user.id);
-                break;
+    const uid = user.id.toString();
+    if (!users[uid]) users[uid] = { saldo: 0 };
+    const cfg = await loadConfig(env.BOT_DB);
+    let bonus = 0;
+    if (cfg.bonus) {
+      if (cfg.bonus.mode === 'percent' && cfg.bonus.percent) {
+        bonus = Math.floor(p.nominal * (cfg.bonus.percent / 100));
+      } else if (cfg.bonus.mode === 'range' && Array.isArray(cfg.bonus.ranges)) {
+        for (const r of cfg.bonus.ranges) {
+          if (p.nominal >= r.min && p.nominal <= r.max) {
+            bonus = r.bonus;
+            break;
+          }
         }
-    } catch (error) {
-        console.error('Error processing admin message:', error);
-        await sendTelegramMessage(env.BOT_TOKEN, user.id, "❌ <b>Terjadi kesalahan saat memproses perintah.</b>");
+      }
+    }
+    users[uid].saldo += p.nominal + bonus;
+    await saveDB(env.BOT_DB, users, 'users');
+    await removePendingPayment(env.BOT_DB, user.id);
+    if (p.messageId) {
+      await telegramEditCaption(env.BOT_TOKEN, user.id, p.messageId, `
+✅ <b>Pembayaran Dikonfirmasi</b>
+🆔 ID: <code>${p.transactionId}</code>
+💰 Nominal: <code>Rp ${formatNumber(p.nominal)}</code>
+🎁 Bonus: <code>Rp ${formatNumber(bonus)}</code>
+💳 Saldo Sekarang: <code>Rp ${formatNumber(users[uid].saldo)}</code>
+`);
+    }
+    await telegramSend(env.BOT_TOKEN, env.ADMIN_ID, `<b>✅ Pembayaran Dikonfirmasi</b>\n> 👤 User: @${user.username||'N/A'} (ID: ${uid})\n> ID: ${p.transactionId}\n> Nominal: Rp ${formatNumber(p.nominal)}\n> Bonus: Rp ${formatNumber(bonus)}`);
+    await sendLog(env, '📥 Deposit Sukses', [
+      `👤 User: @${user.username || 'N/A'} (ID: ${uid})`,
+      `Jenis: Deposit`,
+      `Nominal: Rp ${formatNumber(p.nominal)}`,
+      `Bonus: Rp ${formatNumber(bonus)}`,
+      `Waktu: ${niceTime(new Date())}`
+    ]);
+    await answerCallback(env.BOT_TOKEN, cb.id, '✅ Pembayaran dikonfirmasi.', true);
+  } catch (e) {
+    console.error('handleConfirmPayment error', e);
+    await answerCallback(env.BOT_TOKEN, cb.id, `❌ Terjadi kesalahan: ${e.message}`, true);
+  }
+}
+
+async function handleCancelPayment(update, env) {
+  const cb = update.callback_query;
+  const user = cb.from;
+  const p = await getPendingPayment(env.BOT_DB, user.id);
+  if (!p) {
+    await answerCallback(env.BOT_TOKEN, cb.id, '❌ Tidak ada pembayaran pending.', true);
+    return;
+  }
+  await removePendingPayment(env.BOT_DB, user.id);
+  if (p.messageId) {
+    await telegramEditCaption(env.BOT_TOKEN, user.id, p.messageId, `❌ <b>Pembayaran Dibatalkan</b>\nID: <code>${p.transactionId}</code>`);
+  }
+  await telegramSend(env.BOT_TOKEN, env.ADMIN_ID, `<b>❌ Pembayaran Dibatalkan</b>\n> 👤 User: @${user.username || 'N/A'} (ID: ${user.id})\n> ID: ${p.transactionId}`);
+  await sendLog(env, '❌ Pembayaran Dibatalkan', [
+    `👤 User: @${user.username || 'N/A'} (ID: ${user.id})`,
+    `ID Trans: ${p.transactionId}`,
+    `Waktu: ${niceTime(new Date())}`
+  ]);
+  await answerCallback(env.BOT_TOKEN, cb.id, '❌ Pembayaran dibatalkan.', true);
+}
+
+// -----------------------------
+// Admin UI: /nexus main menu & submenus (inline keyboard driven)
+// -----------------------------
+function nexusMainKeyboard() {
+  return {
+    inline_keyboard: [
+      [{ text: "👥 Kontrol User", callback_data: "nexus_user" }, { text: "💰 Saldo", callback_data: "nexus_saldo" }],
+      [{ text: "📦 Stok", callback_data: "nexus_stok" }, { text: "🧾 Transaksi", callback_data: "nexus_transaksi" }],
+      [{ text: "🎁 Bonus Deposit", callback_data: "nexus_bonus" }, { text: "🚫 Anti-Spam", callback_data: "nexus_spam" }],
+      [{ text: "📢 Broadcast", callback_data: "nexus_broadcast" }, { text: "🔧 Konfigurasi", callback_data: "nexus_config" }],
+      [{ text: "📊 Pending Payments", callback_data: "nexus_pending" }, { text: "⏱️ Uptime", callback_data: "nexus_uptime" }]
+    ]
+  };
+}
+function backButton(data='nexus_main') { return { inline_keyboard: [[{ text: "🔙 Kembali", callback_data: data }]] }; }
+
+async function handleNexusCommand(update, env) {
+  const user = update.message.from;
+  if (user.id.toString() !== env.ADMIN_ID) {
+    return await telegramSend(env.BOT_TOKEN, user.id, '❌ Akses ditolak. Hanya admin.');
+  }
+  const users = await loadDB(env.BOT_DB, 'users');
+  const total = Object.keys(users).length;
+  return await telegramSend(env.BOT_TOKEN, user.id, adminMenuTemplate(total), nexusMainKeyboard());
+}
+
+// Admin callback actions for nexus
+async function handleNexusCallback(update, env) {
+  const cb = update.callback_query;
+  const user = cb.from;
+  if (user.id.toString() !== env.ADMIN_ID) {
+    await answerCallback(env.BOT_TOKEN, cb.id, '❌ Akses ditolak', true);
+    return;
+  }
+  const data = cb.data;
+  await answerCallback(env.BOT_TOKEN, cb.id);
+  // main menu
+  if (data === 'nexus_main') {
+    const users = await loadDB(env.BOT_DB, 'users');
+    const total = Object.keys(users).length;
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, adminMenuTemplate(total), nexusMainKeyboard());
+  }
+  // user control submenu
+  if (data === 'nexus_user') {
+    const kb = { inline_keyboard: [
+      [{ text: "🚫 Ban User", callback_data: "nexus_user_ban" }, { text: "✅ Unban User", callback_data: "nexus_user_unban" }],
+      [{ text: "🔙 Kembali", callback_data: "nexus_main" }]
+    ]};
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>👥 Kontrol User</b>\nPilih tindakan:`, kb);
+  }
+  if (data === 'nexus_saldo') {
+    const kb = { inline_keyboard: [
+      [{ text: "➕ Tambah Saldo", callback_data: "nexus_saldo_add" }, { text: "➖ Kurangi Saldo", callback_data: "nexus_saldo_sub" }],
+      [{ text: "🔙 Kembali", callback_data: "nexus_main" }]
+    ]};
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>💰 Manajemen Saldo</b>\nKirim ID dan jumlah setelah pilih (format bakal muncul).`, kb);
+  }
+  if (data === 'nexus_stok') {
+    const kb = { inline_keyboard: [
+      [{ text: "➕ Tambah Akun", callback_data: "nexus_stok_add" }, { text: "🗑️ Hapus Akun", callback_data: "nexus_stok_del" }],
+      [{ text: "🔙 Kembali", callback_data: "nexus_main" }]
+    ]};
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>📦 Manajemen Stok</b>\nTambahkan / hapus akun produk.`, kb);
+  }
+  if (data === 'nexus_transaksi') {
+    const kb = { inline_keyboard: [
+      [{ text: "⏰ Cek Pending Payments", callback_data: "nexus_transaksi_pending" }, { text: "❌ Batalkan Deposit", callback_data: "nexus_transaksi_cancel" }],
+      [{ text: "🔙 Kembali", callback_data: "nexus_main" }]
+    ]};
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>🧾 Transaksi Admin</b>\nPilih tindakan:`, kb);
+  }
+  if (data === 'nexus_bonus') {
+    const cfg = await loadConfig(env.BOT_DB);
+    const mode = cfg.bonus && cfg.bonus.mode ? cfg.bonus.mode : 'percent';
+    const percent = cfg.bonus && cfg.bonus.percent ? cfg.bonus.percent : 0;
+    const ranges = cfg.bonus && cfg.bonus.ranges ? cfg.bonus.ranges : [];
+    const text = `<b>🎁 Bonus Deposit</b>\nMode: <b>${mode}</b>\nPercent: <code>${percent}%</code>\nRanges: ${ranges.length} item\n\nGunakan command atau tombol di bawah.`;
+    const kb = { inline_keyboard: [
+      [{ text: "Set Percent", callback_data: "nexus_bonus_setpercent" }, { text: "Add Range", callback_data: "nexus_bonus_addrange" }],
+      [{ text: "Clear Ranges", callback_data: "nexus_bonus_clearranges" }, { text: "🔙 Kembali", callback_data: "nexus_main" }]
+    ]};
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, text, kb);
+  }
+  if (data === 'nexus_spam') {
+    const cfg = await loadConfig(env.BOT_DB);
+    const spam = cfg.spam || { limit: 10, window: 10 };
+    const text = `<b>🚫 Anti-Spam</b>\nLimit: <code>${spam.limit}</code> pesan / <code>${spam.window}</code> detik\n\nGunakan /setspam <limit> <windowSeconds> atau tombol.`;
+    const kb = { inline_keyboard: [
+      [{ text: "Set Anti-Spam", callback_data: "nexus_spam_set" }, { text: "🔙 Kembali", callback_data: "nexus_main" }]
+    ]};
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, text, kb);
+  }
+  if (data === 'nexus_broadcast') {
+    const kb = { inline_keyboard: [
+      [{ text: "🔤 Kirim ke Semua", callback_data: "nexus_broadcast_all" }, { text: "🔢 Kirim ke ID", callback_data: "nexus_broadcast_ids" }],
+      [{ text: "🔙 Kembali", callback_data: "nexus_main" }]
+    ]};
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>📢 Broadcast</b>\nBalas pesan ini dengan /broadcast atau gunakan tombol.`, kb);
+  }
+  if (data === 'nexus_config') {
+    const kb = { inline_keyboard: [
+      [{ text: "🔔 Set Log Grup", callback_data: "nexus_config_setnotif" }, { text: "🔁 Reset Config", callback_data: "nexus_config_reset" }],
+      [{ text: "🔙 Kembali", callback_data: "nexus_main" }]
+    ]};
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>🔧 Konfigurasi</b>\nAtur log group / reset config.`, kb);
+  }
+  if (data === 'nexus_pending') {
+    // show pending list
+    const pend = await loadPendingPayments(env.BOT_DB);
+    const keys = Object.keys(pend);
+    if (keys.length === 0) {
+      return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>⏰ Pending Payments</b>\nTidak ada pending saat ini.`, backButton('nexus_main'));
+    }
+    const now = new Date();
+    const lines = keys.map(uid => {
+      const p = pend[uid];
+      const paymentTime = new Date(p.timestamp);
+      const diff = Math.floor((now - paymentTime)/(1000*60));
+      const left = Math.max(0, 10 - diff);
+      return `> ${uid} - ${p.transactionId} - Rp ${formatNumber(p.nominal)} (${left}m left)`;
+    }).join('\n');
+    const text = `<b>⏰ Pending Payments</b>\n${lines}`;
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, text, backButton('nexus_main'));
+  }
+  if (data === 'nexus_uptime') {
+    const up = formatUptime(Date.now() - START_TIME);
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>⏱️ Uptime</b>\n${up}`, backButton('nexus_main'));
+  }
+
+  // Sub-actions: handle specific flows launching sessions for admin via text replies
+  // e.g. nexus_user_ban -> set session action 'ban_user' and instruct admin to reply with ID and optional reason.
+  if (data === 'nexus_user_ban') {
+    userSessions.set(user.id, { action: 'ban_user' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>🚫 Ban User</b>\nKirim ID User dan alasan (opsional) dengan format:\n<code>123456 alasan</code>`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_user_unban') {
+    userSessions.set(user.id, { action: 'unban_user' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>✅ Unban User</b>\nKirim ID User untuk di-unban:\n<code>123456</code>`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_saldo_add') {
+    userSessions.set(user.id, { action: 'tambah_saldo' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>➕ Tambah Saldo</b>\nKirim: <code>id jumlah</code>\nContoh: <code>12345 20000</code>`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_saldo_sub') {
+    userSessions.set(user.id, { action: 'kurangi_saldo' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>➖ Kurangi Saldo</b>\nKirim: <code>id jumlah</code>`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_stok_add') {
+    userSessions.set(user.id, { action: 'tambah_akun', step: 'nama', data: {} });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>➕ Tambah Akun</b>\nKetik nama produk:`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_stok_del') {
+    userSessions.set(user.id, { action: 'hapus_akun' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>🗑️ Hapus Akun</b>\nKirim email/username akun yang ingin dihapus:`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_transaksi_cancel') {
+    userSessions.set(user.id, { action: 'admin_cancel_deposit' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>❌ Batalkan Deposit</b>\nKirim ID user yang ingin dibatalkan pending-nya:`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_bonus_setpercent') {
+    userSessions.set(user.id, { action: 'set_bonus_percent' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>Set Bonus Percent</b>\nKirim angka persen, mis: <code>10</code>`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_bonus_addrange') {
+    userSessions.set(user.id, { action: 'add_bonus_range' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>Tambah Range Bonus</b>\nFormat: <code>min max bonus</code>\nContoh: <code>20000 50000 5000</code>`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_bonus_clearranges') {
+    const cfg = await loadConfig(env.BOT_DB);
+    cfg.bonus = { mode: 'percent', percent: cfg.bonus.percent || 0, ranges: [] };
+    await saveConfig(env.BOT_DB, cfg);
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>✅ Semua range bonus dihapus. Mode set ke percent (${cfg.bonus.percent || 0}%).</b>`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_spam_set') {
+    userSessions.set(user.id, { action: 'set_spam' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>Set Anti-Spam</b>\nKirim: <code>limit windowSeconds</code>\nContoh: <code>10 10</code>`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_broadcast_all' || data === 'nexus_broadcast_ids') {
+    userSessions.set(user.id, { action: data === 'nexus_broadcast_all' ? 'broadcast_all' : 'broadcast_ids' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>📢 Broadcast</b>\nBalas pesan ini dengan /broadcast (reply) atau kirim teks yang akan dibroadcast. Untuk ID gunakan format: /broadcast id1,id2`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_config_setnotif') {
+    userSessions.set(user.id, { action: 'set_notif' });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>🔔 Set Log Grup</b>\nKirim ID grup: <code>-1001234567890</code>`, backButton('nexus_main'));
+  }
+  if (data === 'nexus_config_reset') {
+    await saveConfig(env.BOT_DB, { bonus: { mode: 'percent', percent: 0, ranges: [] }, spam: { limit: 10, window: 10 }, logGroupId: null });
+    return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>✅ Config di-reset ke default.</b>`, backButton('nexus_main'));
+  }
+
+  // default fallback
+  return await telegramEditText(env.BOT_TOKEN, user.id, cb.message.message_id, `<b>Command belum diimplementasikan</b>`, backButton('nexus_main'));
+}
+
+// -----------------------------
+// Admin text flow handler (for sessions)
+// -----------------------------
+async function handleAdminSessionMessage(update, env) {
+  const message = update.message;
+  const user = message.from;
+  if (user.id.toString() !== env.ADMIN_ID) return;
+  const session = userSessions.get(user.id);
+  if (!session) return;
+
+  const users = await loadDB(env.BOT_DB, 'users');
+  const accounts = await loadDB(env.BOT_DB, 'accounts');
+  const cfg = await loadConfig(env.BOT_DB);
+
+  try {
+    switch (session.action) {
+      case 'ban_user': {
+        const parts = message.text.split(/\s+/);
+        const target = parts[0];
+        const reason = parts.slice(1).join(' ') || 'Dibanned oleh admin';
+        if (!target) {
+          await telegramSend(env.BOT_TOKEN, user.id, '❌ Format: <code>userId alasan</code>');
+          userSessions.delete(user.id);
+          return;
+        }
+        await addBan(env, target, reason);
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ User ${target} dibanned.`);
+        try { await telegramSend(env.BOT_TOKEN, parseInt(target), `❌ Anda diblokir oleh admin.\nAlasan: ${reason}`); } catch (e){ }
+        await sendLog(env, '🚫 Ban User', [`Admin: ${env.ADMIN_ID}`, `Target: ${target}`, `Alasan: ${reason}`, `Waktu: ${niceTime(new Date())}`]);
         userSessions.delete(user.id);
-    }
-}
-
-// Handle broadcast command
-async function handleBroadcast(update, env) {
-    const message = update.message;
-    const user = message.from;
-    
-    if (user.id.toString() !== env.ADMIN_ID) {
-        const responseMessage = `
-❌ <b>Akses Ditolak!</b>
-
-Anda tidak memiliki akses ke perintah ini.
-        `;
-        return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
-    }
-    
-    if (!message.reply_to_message) {
-        const responseMessage = `
-⚠️ <b>Perintah Tidak Lengkap!</b>
-
-Silakan balas pesan yang ingin di-broadcast dengan perintah <code>/broadcast</code>, atau tambahkan ID spesifik dengan format <code>/broadcast id1,id2,...</code> di balasan.
-        `;
-        return await sendTelegramMessage(env.BOT_TOKEN, user.id, responseMessage);
-    }
-    
-    const replyMessage = message.reply_to_message;
-    const specificIds = message.text.split(' ')[1]?.split(',').filter(id => id.trim()) || [];
-    
-    const users = await loadDB(env.BOT_DB, 'users');
-    const targetUsers = specificIds.length > 0 ? specificIds : Object.keys(users);
-    const targetType = specificIds.length > 0 ? "ID tertentu" : "semua pengguna";
-    
-    let successCount = 0;
-    let failedCount = 0;
-    
-    // Kirim broadcast ke setiap user
-    for (const targetId of targetUsers) {
-        try {
-            if (replyMessage.text) {
-                await sendTelegramMessage(env.BOT_TOKEN, parseInt(targetId), replyMessage.text);
-            } else {
-                // Untuk tipe media lain, kirim pesan teks sederhana
-                await sendTelegramMessage(env.BOT_TOKEN, parseInt(targetId), "📢 <b>Pesan Broadcast dari Admin</b>\n\nHubungi admin untuk informasi lebih lanjut.");
-            }
-            successCount++;
-        } catch (error) {
-            failedCount++;
+        return;
+      }
+      case 'unban_user': {
+        const target = message.text.trim();
+        if (!target) { await telegramSend(env.BOT_TOKEN, user.id, '❌ Kirim ID user'); userSessions.delete(user.id); return; }
+        await removeBan(env, target);
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ User ${target} di-unban.`);
+        try { await telegramSend(env.BOT_TOKEN, parseInt(target), `✅ Akun Anda telah dibuka kembali oleh admin.`); } catch (e) {}
+        await sendLog(env, '✅ Unban User', [`Admin: ${env.ADMIN_ID}`, `Target: ${target}`, `Waktu: ${niceTime(new Date())}`]);
+        userSessions.delete(user.id);
+        return;
+      }
+      case 'tambah_saldo': {
+        const [target, amountStr] = message.text.trim().split(/\s+/);
+        const amount = parseInt(amountStr);
+        if (!target || isNaN(amount)) { await telegramSend(env.BOT_TOKEN, user.id, '❌ Format: <code>id jumlah</code>'); userSessions.delete(user.id); return; }
+        if (!users[target]) users[target] = { saldo: 0 };
+        users[target].saldo += amount;
+        await saveDB(env.BOT_DB, users, 'users');
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ Saldo ditambahkan ke ${target}: Rp ${formatNumber(amount)}`);
+        try { await telegramSend(env.BOT_TOKEN, parseInt(target), `✅ Saldo Anda bertambah: Rp ${formatNumber(amount)}`); } catch (e) {}
+        await sendLog(env, '💰 Tambah Saldo', [`Admin: ${env.ADMIN_ID}`, `Target: ${target}`, `Jumlah: Rp ${formatNumber(amount)}`, `Waktu: ${niceTime(new Date())}`]);
+        userSessions.delete(user.id);
+        return;
+      }
+      case 'kurangi_saldo': {
+        const [target, amountStr] = message.text.trim().split(/\s+/);
+        const amount = parseInt(amountStr);
+        if (!target || isNaN(amount)) { await telegramSend(env.BOT_TOKEN, user.id, '❌ Format: <code>id jumlah</code>'); userSessions.delete(user.id); return; }
+        if (!users[target]) users[target] = { saldo: 0 };
+        users[target].saldo -= amount;
+        if (users[target].saldo < 0) users[target].saldo = 0;
+        await saveDB(env.BOT_DB, users, 'users');
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ Saldo dikurangi dari ${target}: Rp ${formatNumber(amount)}`);
+        try { await telegramSend(env.BOT_TOKEN, parseInt(target), `❗ Saldo Anda dikurangi: Rp ${formatNumber(amount)}`); } catch (e) {}
+        await sendLog(env, '➖ Kurangi Saldo', [`Admin: ${env.ADMIN_ID}`, `Target: ${target}`, `Jumlah: Rp ${formatNumber(amount)}`, `Waktu: ${niceTime(new Date())}`]);
+        userSessions.delete(user.id);
+        return;
+      }
+      case 'tambah_akun': {
+        // multi-step: nama -> email -> password -> harga -> deskripsi -> note
+        const step = session.step;
+        const data = session.data || {};
+        if (step === 'nama') {
+          data.name = message.text.trim();
+          session.step = 'email';
+          session.data = data;
+          userSessions.set(user.id, session);
+          await telegramSend(env.BOT_TOKEN, user.id, '<b>Masukkan username/email</b>');
+          return;
+        } else if (step === 'email') {
+          data.email = message.text.trim();
+          session.step = 'password';
+          session.data = data;
+          userSessions.set(user.id, session);
+          await telegramSend(env.BOT_TOKEN, user.id, '<b>Masukkan password</b>');
+          return;
+        } else if (step === 'password') {
+          data.password = message.text.trim();
+          session.step = 'harga';
+          session.data = data;
+          userSessions.set(user.id, session);
+          await telegramSend(env.BOT_TOKEN, user.id, '<b>Masukkan harga (angka)</b>');
+          return;
+        } else if (step === 'harga') {
+          const price = parseInt(message.text.replace(/\D/g,''));
+          if (isNaN(price)) { await telegramSend(env.BOT_TOKEN, user.id, '❌ Harga harus angka'); userSessions.delete(user.id); return; }
+          data.price = price;
+          session.step = 'deskripsi';
+          session.data = data;
+          userSessions.set(user.id, session);
+          await telegramSend(env.BOT_TOKEN, user.id, `<b>Masukkan deskripsi produk</b>`);
+          return;
+        } else if (step === 'deskripsi') {
+          data.description = message.text.trim();
+          session.step = 'note';
+          session.data = data;
+          userSessions.set(user.id, session);
+          await telegramSend(env.BOT_TOKEN, user.id, `<b>Masukkan catatan (atau ketik 'tidak ada')</b>`);
+          return;
+        } else if (step === 'note') {
+          data.note = message.text.trim().toLowerCase() !== 'tidak ada' ? message.text.trim() : 'Tidak ada catatan';
+          accounts[data.email] = data;
+          await saveDB(env.BOT_DB, accounts, 'accounts');
+          await telegramSend(env.BOT_TOKEN, user.id, `<b>✅ Akun berhasil ditambahkan</b>\nNama: <code>${data.name}</code>\nEmail: <code>${data.email}</code>\nHarga: Rp ${formatNumber(data.price)}`);
+          await sendLog(env, '➕ Stok Ditambah', [`Admin: ${env.ADMIN_ID}`, `Produk: ${data.name}`, `Email: ${data.email}`, `Harga: Rp ${formatNumber(data.price)}`, `Waktu: ${niceTime(new Date())}`]);
+          userSessions.delete(user.id);
+          return;
         }
-        
-        // Tunggu sebentar untuk menghindari rate limit
-        await new Promise(resolve => setTimeout(resolve, 100));
+        return;
+      }
+      case 'hapus_akun': {
+        const key = message.text.trim();
+        if (accounts[key]) {
+          delete accounts[key];
+          await saveDB(env.BOT_DB, accounts, 'accounts');
+          await telegramSend(env.BOT_TOKEN, user.id, '✅ Akun berhasil dihapus.');
+          await sendLog(env, '🗑️ Hapus Akun', [`Admin: ${env.ADMIN_ID}`, `Akun: ${key}`, `Waktu: ${niceTime(new Date())}`]);
+        } else {
+          await telegramSend(env.BOT_TOKEN, user.id, '❌ Akun tidak ditemukan.');
+        }
+        userSessions.delete(user.id);
+        return;
+      }
+      case 'admin_cancel_deposit': {
+        const target = message.text.trim();
+        if (!target) { await telegramSend(env.BOT_TOKEN, user.id, '❌ Kirim ID user'); userSessions.delete(user.id); return; }
+        const pend = await getPendingPayment(env.BOT_DB, target);
+        if (!pend) { await telegramSend(env.BOT_TOKEN, user.id, '⚠️ Tidak ada pending untuk user tersebut'); userSessions.delete(user.id); return; }
+        if (pend.messageId) {
+          try { await telegramEditCaption(env.BOT_TOKEN, parseInt(target), pend.messageId, `❌ <b>Pembayaran Dibatalkan oleh Admin</b>\nID: <code>${pend.transactionId}</code>`); } catch(e) {}
+        }
+        await removePendingPayment(env.BOT_DB, target);
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ Pending deposit untuk ${target} dibatalkan.`);
+        try { await telegramSend(env.BOT_TOKEN, parseInt(target), `❌ Pembayaran Anda dibatalkan oleh admin.`); } catch (e) {}
+        await sendLog(env, '❌ Admin Batalkan Deposit', [`Admin: ${env.ADMIN_ID}`, `Target: ${target}`, `Trans: ${pend.transactionId}`, `Waktu: ${niceTime(new Date())}`]);
+        userSessions.delete(user.id);
+        return;
+      }
+      case 'set_bonus_percent': {
+        const val = parseFloat(message.text.trim());
+        if (isNaN(val)) { await telegramSend(env.BOT_TOKEN, user.id, '❌ Kirim angka persen'); userSessions.delete(user.id); return; }
+        cfg.bonus = cfg.bonus || { mode: 'percent', percent: 0, ranges: [] };
+        cfg.bonus.mode = 'percent';
+        cfg.bonus.percent = val;
+        await saveConfig(env.BOT_DB, cfg);
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ Bonus percent diset: ${val}%`);
+        await sendLog(env, '🎁 Set Bonus Percent', [`Admin: ${env.ADMIN_ID}`, `Percent: ${val}%`, `Waktu: ${niceTime(new Date())}`]);
+        userSessions.delete(user.id);
+        return;
+      }
+      case 'add_bonus_range': {
+        const parts = message.text.trim().split(/\s+/);
+        const min = parseInt(parts[0]);
+        const max = parseInt(parts[1]);
+        const bonus = parseInt(parts[2]);
+        if (isNaN(min) || isNaN(max) || isNaN(bonus)) { await telegramSend(env.BOT_TOKEN, user.id, '❌ Format: min max bonus'); userSessions.delete(user.id); return; }
+        cfg.bonus = cfg.bonus || { mode: 'range', percent: 0, ranges: [] };
+        cfg.bonus.mode = 'range';
+        cfg.bonus.ranges = cfg.bonus.ranges || [];
+        cfg.bonus.ranges.push({ min, max, bonus });
+        await saveConfig(env.BOT_DB, cfg);
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ Range ditambahkan: ${min}-${max} => Rp ${formatNumber(bonus)}`);
+        await sendLog(env, '🎁 Add Bonus Range', [`Admin: ${env.ADMIN_ID}`, `Range: ${min}-${max}`, `Bonus: Rp ${formatNumber(bonus)}`, `Waktu: ${niceTime(new Date())}`]);
+        userSessions.delete(user.id);
+        return;
+      }
+      case 'set_spam': {
+        const parts = message.text.trim().split(/\s+/);
+        const limit = parseInt(parts[0]);
+        const window = parseInt(parts[1]);
+        if (isNaN(limit) || isNaN(window)) { await telegramSend(env.BOT_TOKEN, user.id, '❌ Format: limit windowSeconds'); userSessions.delete(user.id); return; }
+        cfg.spam = { limit, window };
+        await saveConfig(env.BOT_DB, cfg);
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ Anti-spam diset: ${limit} msgs / ${window}s`);
+        await sendLog(env, '🚫 Set Anti-Spam', [`Admin: ${env.ADMIN_ID}`, `Limit: ${limit}`, `Window: ${window}s`, `Waktu: ${niceTime(new Date())}`]);
+        userSessions.delete(user.id);
+        return;
+      }
+      case 'set_notif': {
+        const gid = message.text.trim();
+        if (!gid) { await telegramSend(env.BOT_TOKEN, user.id, '❌ Kirim ID grup'); userSessions.delete(user.id); return; }
+        cfg.logGroupId = gid;
+        await saveConfig(env.BOT_DB, cfg);
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ ID grup log disimpan: ${gid}`);
+        await sendLog(env, '🔔 Set Log Group', [`Admin: ${env.ADMIN_ID}`, `Group: ${gid}`, `Waktu: ${niceTime(new Date())}`]);
+        userSessions.delete(user.id);
+        return;
+      }
+      case 'broadcast_all': {
+        // message.text is the content to send
+        const content = message.text;
+        const allUsers = await loadDB(env.BOT_DB, 'users');
+        const ids = Object.keys(allUsers);
+        let success = 0, fail = 0;
+        for (const id of ids) {
+          try {
+            await telegramSend(env.BOT_TOKEN, parseInt(id), content);
+            success++;
+          } catch (e) { fail++; }
+          await new Promise(res => setTimeout(res, 80));
+        }
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ Broadcast selesai. Success: ${success}, Fail: ${fail}`);
+        userSessions.delete(user.id);
+        return;
+      }
+      case 'broadcast_ids': {
+        // format: first line ids comma separated? We'll expect admin used /broadcast id1,id2 reply or text: "id1,id2\nmessage"
+        const raw = message.text.split('\n');
+        const idsPart = raw[0].trim();
+        const msgPart = raw.slice(1).join('\n').trim();
+        const ids = idsPart.split(',').map(s => s.trim()).filter(Boolean);
+        if (!ids.length || !msgPart) { await telegramSend(env.BOT_TOKEN, user.id, '❌ Format: id1,id2,...\\nPesan'); userSessions.delete(user.id); return; }
+        let s=0,f=0;
+        for (const id of ids) {
+          try { await telegramSend(env.BOT_TOKEN, parseInt(id), msgPart); s++; } catch(e){ f++; }
+        }
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ Broadcast selesai. Success: ${s}, Fail: ${f}`);
+        userSessions.delete(user.id);
+        return;
+      }
+      default:
+        userSessions.delete(user.id);
+        return;
     }
-    
-    const resultMessage = `
-🎉 <b>Broadcast Selesai!</b>
-
-📍 Target: <b>${targetType}</b>
-✅ <b>Berhasil terkirim:</b> <code>${successCount}</code>
-❌ <b>Gagal terkirim:</b> <code>${failedCount}</code>
-
-Terima kasih telah menggunakan bot ini! 😊
-    `;
-    
-    await sendTelegramMessage(env.BOT_TOKEN, user.id, resultMessage);
+  } catch (e) {
+    console.error('handleAdminSessionMessage error', e);
+    userSessions.delete(user.id);
+    await telegramSend(env.BOT_TOKEN, user.id, `❌ Terjadi kesalahan: ${e.message}`);
+  }
 }
 
-// Cleanup expired payments secara otomatis
+// -----------------------------
+// Cleanup expired pending payments
+// -----------------------------
 async function cleanupExpiredPayments(env) {
-    try {
-        const pendingPayments = await loadPendingPayments(env.BOT_DB);
-        const now = new Date();
-        let cleanedCount = 0;
-        
-        for (const [userId, payment] of Object.entries(pendingPayments)) {
-            const paymentTime = new Date(payment.timestamp);
-            const diffMinutes = (now - paymentTime) / (1000 * 60);
-            
-            if (diffMinutes > 10) { // Expired setelah 10 menit
-                // Kirim notifikasi expired ke user
-                const expiredCaption = `
-❌ <b>Pembayaran Expired</b>
-
-🆔 <b>ID Transaksi:</b> <code>${payment.transactionId}</code>
-
-Pembayaran telah expired. Silakan buat deposit baru.
-                `;
-                
-                if (payment.messageId) {
-                    await editMessageCaption(env.BOT_TOKEN, parseInt(userId), payment.messageId, expiredCaption);
-                }
-                
-                // Hapus dari database
-                await removePendingPayment(env.BOT_DB, parseInt(userId));
-                cleanedCount++;
-            }
+  try {
+    const pending = await loadPendingPayments(env.BOT_DB);
+    const now = new Date();
+    for (const [uid, p] of Object.entries(pending)) {
+      const paymentTime = new Date(p.timestamp);
+      const diff = (now - paymentTime) / (1000*60);
+      if (diff > 10) {
+        if (p.messageId) {
+          try { await telegramEditCaption(env.BOT_TOKEN, parseInt(uid), p.messageId, `❌ <b>Pembayaran Expired</b>\nID: <code>${p.transactionId}</code>`); } catch(e){}
         }
-        
-        if (cleanedCount > 0) {
-            console.log(`Cleaned up ${cleanedCount} expired payments`);
-        }
-    } catch (error) {
-        console.error('Error cleaning up expired payments:', error);
+        await removePendingPayment(env.BOT_DB, uid);
+        await telegramSend(env.BOT_TOKEN, env.ADMIN_ID, `<b>⏰ Pending payment expired</b>\n> User: ${uid}\n> Trans: ${p.transactionId}`);
+        await sendLog(env, '⏰ Pending Expired', [`User: ${uid}`, `Trans: ${p.transactionId}`, `Waktu: ${niceTime(new Date())}`]);
+      }
     }
+  } catch (e) {
+    console.error('cleanupExpiredPayments error', e);
+  }
 }
 
-// Main router handler
+// -----------------------------
+// Router: main entry
+// -----------------------------
 router.post('/', async (request, env) => {
-    try {
-        const update = await request.json();
-        
-        // Cleanup expired payments setiap kali ada request
-        await cleanupExpiredPayments(env);
-        
-        // Handle different types of updates
-        if (update.message) {
-            const text = update.message.text || '';
-            
-            if (text.startsWith('/start')) {
-                return new Response(JSON.stringify(await handleStart(update, env)));
-            } else if (text.startsWith('/id')) {
-                return new Response(JSON.stringify(await handleGetId(update, env)));
-            } else if (text.startsWith('/admin')) {
-                return new Response(JSON.stringify(await handleAdmin(update, env)));
-            } else if (text.startsWith('/broadcast')) {
-                return new Response(JSON.stringify(await handleBroadcast(update, env)));
-            } else if (update.message.text && !text.startsWith('/')) {
-                // Handle regular messages
-                const user = update.message.from;
-                
-                // Cek jika admin sedang dalam session
-                if (user.id.toString() === env.ADMIN_ID && userSessions.has(user.id)) {
-                    return new Response(JSON.stringify(await handleAdminMessage(update, env)));
-                }
-                
-                // Handle deposit message untuk user biasa
-                return new Response(JSON.stringify(await handleDepositMessage(update, env)));
-            }
-        } else if (update.callback_query) {
-            const callbackData = update.callback_query.data;
-            
-            if (callbackData === 'beli_akun') {
-                return new Response(JSON.stringify(await handleBeliAkunCallback(update, env)));
-            } else if (callbackData.startsWith('group_')) {
-                return new Response(JSON.stringify(await handleDetailAkun(update, env)));
-            } else if (callbackData.startsWith('beli_')) {
-                return new Response(JSON.stringify(await handleProsesPembelian(update, env)));
-            } else if (callbackData === 'deposit') {
-                return new Response(JSON.stringify(await handleDepositCallback(update, env)));
-            } else if (callbackData.startsWith('confirm_payment_')) {
-                return new Response(JSON.stringify(await handleConfirmPayment(update, env)));
-            } else if (callbackData === 'cancel_payment') {
-                return new Response(JSON.stringify(await handleCancelPayment(update, env)));
-            } else if (callbackData.startsWith('admin_')) {
-                return new Response(JSON.stringify(await handleAdminActions(update, env)));
-            } else if (callbackData === 'back_to_main') {
-                return new Response(JSON.stringify(await handleBackToMain(update, env)));
-            }
-        }
-        
-        return new Response('OK');
-    } catch (error) {
-        console.error('Error handling update:', error);
-        return new Response('Error', { status: 500 });
+  try {
+    const update = await request.json();
+
+    // run cleanup on every request
+    await cleanupExpiredPayments(env);
+
+    // callback_query handling
+    if (update.callback_query) {
+      const data = update.callback_query.data;
+      // nexus callbacks
+      if (data && data.startsWith('nexus')) {
+        return new Response(JSON.stringify(await handleNexusCallback(update, env)));
+      }
+      // buy callbacks
+      if (data === 'beli_akun') return new Response(JSON.stringify(await handleBeliAkunCallback(update, env)));
+      if (data.startsWith('group_')) return new Response(JSON.stringify(await handleDetailAkun(update, env)));
+      if (data.startsWith('beli_')) return new Response(JSON.stringify(await handleProsesPembelian(update, env)));
+      if (data === 'deposit') return new Response(JSON.stringify(await handleDepositCallback(update, env)));
+      if (data.startsWith('confirm_payment_')) return new Response(JSON.stringify(await handleConfirmPayment(update, env)));
+      if (data === 'cancel_payment') return new Response(JSON.stringify(await handleCancelPayment(update, env)));
+      // fallback OK
+      return new Response('OK');
     }
+
+    // message handling
+    if (update.message) {
+      const text = update.message.text || '';
+      const user = update.message.from;
+
+      // Admin session messages (if any)
+      if (user.id.toString() === env.ADMIN_ID && userSessions.has(user.id)) {
+        await handleAdminSessionMessage(update, env);
+        return new Response(JSON.stringify({ ok: true }));
+      }
+
+      // commands that don't require /nexus menu
+      if (text.startsWith('/nexus')) {
+        return new Response(JSON.stringify(await handleNexusCommand(update, env)));
+      }
+      if (text.startsWith('/setnotif')) {
+        // allow admin to set group quickly as well
+        if (user.id.toString() !== env.ADMIN_ID) return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '❌ Akses ditolak')));
+        const parts = text.split(/\s+/);
+        const gid = parts[1];
+        if (!gid) return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '❌ Usage: /setnotif <id_grup>')));
+        const cfg = await loadConfig(env.BOT_DB);
+        cfg.logGroupId = gid;
+        await saveConfig(env.BOT_DB, cfg);
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ ID grup log disimpan: ${gid}`);
+        return new Response(JSON.stringify({ ok: true }));
+      }
+      if (text.startsWith('/uptime')) {
+        const up = formatUptime(Date.now() - START_TIME);
+        return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, `⏱️ Uptime: ${up}`)));
+      }
+
+      // admin quick text commands (some kept for backward compatibility)
+      if (user.id.toString() === env.ADMIN_ID) {
+        // commands: /ban, /unban, /canceldeposit, /setbonuspercent, /addrangebonus, /clearrangebonus, /setspam
+        const parts = text.trim().split(/\s+/);
+        const cmd = parts[0].toLowerCase();
+
+        if (cmd === '/ban') {
+          const target = parts[1];
+          const reason = parts.slice(2).join(' ') || 'Dibanned oleh admin';
+          if (!target) return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '❌ Usage: /ban <userId> [reason]')));
+          await addBan(env, target, reason);
+          await telegramSend(env.BOT_TOKEN, user.id, `✅ User ${target} dibanned.`);
+          try { await telegramSend(env.BOT_TOKEN, parseInt(target), `❌ Anda diblokir oleh admin.\nAlasan: ${reason}`); } catch(e){}
+          await sendLog(env, '🚫 Ban User', [`Admin: ${env.ADMIN_ID}`, `Target: ${target}`, `Alasan: ${reason}`, `Waktu: ${niceTime(new Date())}`]);
+          return new Response(JSON.stringify({ ok: true }));
+        }
+        if (cmd === '/unban') {
+          const target = parts[1];
+          if (!target) return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '❌ Usage: /unban <userId>')));
+          await removeBan(env, target);
+          await telegramSend(env.BOT_TOKEN, user.id, `✅ User ${target} di-unban.`);
+          try { await telegramSend(env.BOT_TOKEN, parseInt(target), `✅ Akun Anda telah dibuka kembali oleh admin.`); } catch(e){}
+          await sendLog(env, '✅ Unban User', [`Admin: ${env.ADMIN_ID}`, `Target: ${target}`, `Waktu: ${niceTime(new Date())}`]);
+          return new Response(JSON.stringify({ ok: true }));
+        }
+        if (cmd === '/canceldeposit') {
+          const target = parts[1];
+          if (!target) return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '❌ Usage: /canceldeposit <userId>')));
+          const pend = await getPendingPayment(env.BOT_DB, target);
+          if (!pend) return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '⚠️ Tidak ada pending untuk user tersebut')));
+          if (pend.messageId) {
+            try { await telegramEditCaption(env.BOT_TOKEN, parseInt(target), pend.messageId, `❌ <b>Pembayaran Dibatalkan oleh Admin</b>\nID: <code>${pend.transactionId}</code>`); } catch(e){}
+          }
+          await removePendingPayment(env.BOT_DB, target);
+          await telegramSend(env.BOT_TOKEN, user.id, `✅ Pending deposit untuk ${target} dibatalkan.`);
+          try { await telegramSend(env.BOT_TOKEN, parseInt(target), `❌ Pembayaran Anda dibatalkan oleh admin.`); } catch(e){}
+          await sendLog(env, '❌ Admin Batalkan Deposit', [`Admin: ${env.ADMIN_ID}`, `Target: ${target}`, `Trans: ${pend.transactionId}`, `Waktu: ${niceTime(new Date())}`]);
+          return new Response(JSON.stringify({ ok: true }));
+        }
+        if (cmd === '/setbonuspercent') {
+          const val = parseFloat(parts[1]);
+          if (isNaN(val)) return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '❌ Usage: /setbonuspercent <percent>')));
+          const cfg = await loadConfig(env.BOT_DB);
+          cfg.bonus = cfg.bonus || { mode: 'percent', percent: 0, ranges: [] };
+          cfg.bonus.mode = 'percent';
+          cfg.bonus.percent = val;
+          await saveConfig(env.BOT_DB, cfg);
+          await telegramSend(env.BOT_TOKEN, user.id, `✅ Bonus percent diset: ${val}%`);
+          await sendLog(env, '🎁 Set Bonus Percent', [`Admin: ${env.ADMIN_ID}`, `Percent: ${val}%`, `Waktu: ${niceTime(new Date())}`]);
+          return new Response(JSON.stringify({ ok: true }));
+        }
+        if (cmd === '/addrangebonus') {
+          const min = parseInt(parts[1]); const max = parseInt(parts[2]); const bonus = parseInt(parts[3]);
+          if (isNaN(min) || isNaN(max) || isNaN(bonus)) return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '❌ Usage: /addrangebonus <min> <max> <bonus>')));
+          const cfg = await loadConfig(env.BOT_DB);
+          cfg.bonus = cfg.bonus || { mode: 'range', percent: 0, ranges: [] };
+          cfg.bonus.mode = 'range';
+          cfg.bonus.ranges = cfg.bonus.ranges || [];
+          cfg.bonus.ranges.push({ min, max, bonus });
+          await saveConfig(env.BOT_DB, cfg);
+          await telegramSend(env.BOT_TOKEN, user.id, `✅ Range ditambahkan: ${min}-${max} => Rp ${formatNumber(bonus)}`);
+          await sendLog(env, '🎁 Add Bonus Range', [`Admin: ${env.ADMIN_ID}`, `Range: ${min}-${max}`, `Bonus: Rp ${formatNumber(bonus)}`, `Waktu: ${niceTime(new Date())}`]);
+          return new Response(JSON.stringify({ ok: true }));
+        }
+        if (cmd === '/clearrangebonus') {
+          const cfg = await loadConfig(env.BOT_DB);
+          cfg.bonus = { mode: 'percent', percent: cfg.bonus.percent || 0, ranges: [] };
+          await saveConfig(env.BOT_DB, cfg);
+          await telegramSend(env.BOT_TOKEN, user.id, `✅ Semua range bonus dihapus.`);
+          return new Response(JSON.stringify({ ok: true }));
+        }
+        if (cmd === '/setspam') {
+          const limit = parseInt(parts[1]); const window = parseInt(parts[2]);
+          if (isNaN(limit) || isNaN(window)) return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '❌ Usage: /setspam <limit> <windowSeconds>')));
+          const cfg = await loadConfig(env.BOT_DB);
+          cfg.spam = { limit, window };
+          await saveConfig(env.BOT_DB, cfg);
+          await telegramSend(env.BOT_TOKEN, user.id, `✅ Anti-spam diset: ${limit} msgs / ${window}s`);
+          return new Response(JSON.stringify({ ok: true }));
+        }
+      }
+
+      // Non-admin messages: anti-spam & deposit handling
+      if (!text.startsWith('/') && user.id.toString() !== env.ADMIN_ID) {
+        const banned = await checkAntiSpam(env, user.id.toString(), user.username);
+        if (banned) {
+          await telegramSend(env.BOT_TOKEN, user.id, '❌ Anda diblokir sementara karena aktivitas spam. Hubungi admin jika keliru.');
+          return new Response(JSON.stringify({ ok: true }));
+        }
+      }
+
+      // standard commands
+      if (text.startsWith('/start')) return new Response(JSON.stringify(await handleStart(update, env)));
+      if (text.startsWith('/id')) return new Response(JSON.stringify(await handleGetId(update, env)));
+      if (text.startsWith('/broadcast')) {
+        // keep original broadcast behavior (reply to message or /broadcast id1,id2)
+        if (user.id.toString() !== env.ADMIN_ID) return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '❌ Akses ditolak')));
+        if (!update.message.reply_to_message && text.indexOf(' ') === -1) {
+          return new Response(JSON.stringify(await telegramSend(env.BOT_TOKEN, user.id, '⚠️ Balas pesan yang ingin di-broadcast atau gunakan /broadcast id1,id2')));
+        }
+        const reply = update.message.reply_to_message;
+        const specificIds = text.split(' ')[1]?.split(',').filter(Boolean) || [];
+        const users = await loadDB(env.BOT_DB, 'users');
+        const targets = specificIds.length ? specificIds : Object.keys(users);
+        let s=0,f=0;
+        for (const t of targets) {
+          try {
+            if (reply && reply.text) await telegramSend(env.BOT_TOKEN, parseInt(t), reply.text);
+            else await telegramSend(env.BOT_TOKEN, parseInt(t), '📢 Broadcast dari admin');
+            s++;
+          } catch (e) { f++; }
+          await new Promise(r => setTimeout(r, 80));
+        }
+        await telegramSend(env.BOT_TOKEN, user.id, `✅ Broadcast selesai. Success: ${s}, Fail: ${f}`);
+        return new Response(JSON.stringify({ ok: true }));
+      }
+
+      // if regular non-command text -> deposit message handler
+      if (update.message.text && !text.startsWith('/')) {
+        return new Response(JSON.stringify(await handleDepositMessage(update, env)));
+      }
+    }
+
+    return new Response('OK');
+  } catch (e) {
+    console.error('Main router error', e);
+    return new Response('Error', { status: 500 });
+  }
 });
 
 router.get('/', () => new Response('Telegram Bot is running!'));
 
 export default {
-    fetch: router.handle
+  fetch: router.handle
 };
