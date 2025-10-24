@@ -31,7 +31,7 @@ function formatUptime(startTimeISO) { if (!startTimeISO) return "Baru saja"; con
 
 // --- (BAGIAN 2: LOGIKA BOT (Tampilan Sesuai Request V2)) ---
 
-// ** ✨ Handle /start & Kembali (Teks Persis Sesuai Request + V1.0 Beta) ✨ **
+// ** ✨ Handle /start & Kembali (Teks Persis Sesuai Request + V1.1 Beta) ✨ **
 async function displayMainMenu(env, user, isEdit = false, messageId = null, callbackQueryId = null) {
     const userId = user.id.toString();
     const userFirstName = `𝗧𝗲𝗮𝗺𝗡𝗲𝘅𝘂𝘀𝗗𝗲𝘃`;
